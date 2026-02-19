@@ -1,0 +1,49 @@
+[2026-02-23 22:48:49] [INFO] [Electron] App ready, loading config...
+[2026-02-23 22:48:49] [INFO] [Electron] Loading config from: D:\workspace\Uverse\backend\.env
+[2026-02-23 22:48:49] [INFO] [Electron] Config loaded: [object Object]
+[2026-02-23 22:48:49] [INFO] [Electron] Creating window and loading app...
+[2026-02-23 22:48:49] [INFO] [Electron] Loading: D:\workspace\Uverse\frontend\dist\index.html
+[2026-02-23 22:48:49] [INFO] [Electron] Starting services in background...
+[2026-02-23 22:48:49] [INFO] [Electron] Cleaning up residual processes...
+[2026-02-23 22:48:52] [INFO] [Electron] Starting PostgreSQL on port 15432
+[2026-02-23 22:48:52] [INFO] [Electron] PG directory: D:\workspace\Uverse\backend\postgres
+[2026-02-23 22:48:52] [INFO] [Electron] pg_ctl path: D:\workspace\Uverse\backend\postgres\bin\pg_ctl.exe
+[2026-02-23 22:48:52] [INFO] [Electron] pg_ctl exists: true
+[2026-02-23 22:48:52] [INFO] [Electron] PostgreSQL start command issued
+[2026-02-23 22:48:52] [INFO] [Electron] PostgreSQL ready on port 15432
+[2026-02-23 22:48:52] [INFO] [Electron] Starting RustFS on port 9000
+[2026-02-23 22:48:52] [INFO] [Electron] Store directory: D:\workspace\Uverse\backend\store
+[2026-02-23 22:48:52] [INFO] [Electron] rustfs path: D:\workspace\Uverse\backend\store\rustfs.exe
+[2026-02-23 22:48:52] [INFO] [Electron] rustfs exists: true
+[2026-02-23 22:48:52] [INFO] [Electron] RustFS started, PID: 6924
+[2026-02-23 22:48:52] [INFO] [RustFS] RustFS Http API: http://192.168.0.118:9000  http://127.0.0.1:9000
+[2026-02-23 22:48:52] [INFO] [RustFS] RustFS Start Time: 2026-02-23 22:48:52
+[2026-02-23 22:48:52] [INFO] [RustFS] Console WebUI Start Time: 2026-02-23 22:48:52
+[2026-02-23 22:48:52] [INFO] [RustFS] Console WebUI available at: http://192.168.0.118:9001/rustfs/console/index.html
+[2026-02-23 22:48:52] [INFO] [RustFS] Console WebUI (localhost): http://127.0.0.1:9001/rustfs/console/index.html
+[2026-02-23 22:48:52] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:52.6545577+08:00","level":"ERROR","fields":{"message":"cleanup_deleted_objects error: Io(Os { code: 5, kind: PermissionDenied, message: \"拒绝访问。\" })"},"target":"rustfs_ecstore::disk::local","filename":"crates\\ecstore\\src\\disk\\local.rs","line_number":260,"threadName":"rustfs-worker","threadId":"ThreadId(10)"}
+[2026-02-23 22:48:52] [INFO] [RustFS] RustFS server version: refs/tags/1.0.0-alpha.83 started successfully at 127.0.0.1:9000, current time: 2026-02-23T22:48:52.7218359+08:00[Asia/Shanghai]
+[2026-02-23 22:48:53] [INFO] [Electron] RustFS ready on port 9000
+[2026-02-23 22:48:53] [INFO] [Electron] Starting Python backend on port 8000
+[2026-02-23 22:48:53] [INFO] [Electron] Backend path: D:\workspace\Uverse\backend
+[2026-02-23 22:48:53] [INFO] [Electron] Packaged exe exists: false D:\workspace\Uverse\backend\uverse-backend.exe
+[2026-02-23 22:48:53] [INFO] [Electron] Using Python interpreter: D:\workspace\Uverse\backend\.venv\Scripts\python.exe
+[2026-02-23 22:48:53] [INFO] [Python] [FileLogManager] 初始化完成，日志目录: D:\workspace\Uverse\backend\logs
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.2060263+08:00","level":"ERROR","fields":{"message":"make_bucket per_pool_errs: [Some(VolumeExists)]"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":203,"threadName":"rustfs-worker","threadId":"ThreadId(10)"}
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.2060412+08:00","level":"ERROR","fields":{"message":"make_bucket reduce_write_quorum_errs: volume already exists"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":204,"threadName":"rustfs-worker","threadId":"ThreadId(10)"}
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.2130788+08:00","level":"ERROR","fields":{"message":"make_bucket per_pool_errs: [Some(VolumeExists)]"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":203,"threadName":"rustfs-worker","threadId":"ThreadId(17)"}
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.213092+08:00","level":"ERROR","fields":{"message":"make_bucket reduce_write_quorum_errs: volume already exists"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":204,"threadName":"rustfs-worker","threadId":"ThreadId(17)"}
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.2187883+08:00","level":"ERROR","fields":{"message":"make_bucket per_pool_errs: [Some(VolumeExists)]"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":203,"threadName":"rustfs-worker","threadId":"ThreadId(15)"}
+[2026-02-23 22:48:56] [INFO] [RustFS] {"timestamp":"2026-02-23T22:48:56.2188031+08:00","level":"ERROR","fields":{"message":"make_bucket reduce_write_quorum_errs: volume already exists"},"target":"rustfs_ecstore::rpc::peer_s3_client","filename":"crates\\ecstore\\src\\rpc\\peer_s3_client.rs","line_number":204,"threadName":"rustfs-worker","threadId":"ThreadId(15)"}
+[2026-02-23 22:48:56] [INFO] [Electron] Python backend ready
+[2026-02-23 22:48:56] [INFO] [Electron] All services started successfully
+[2026-02-23 22:48:56] [INFO] [Electron] All services started successfully
+[2026-02-23 22:49:00] [INFO] [Electron] Window closing, stopping services...
+[2026-02-23 22:49:00] [INFO] [Electron] Stopping all services...
+[2026-02-23 22:49:00] [INFO] [Electron] Stopping Python backend...
+[2026-02-23 22:49:00] [INFO] [Electron] Python backend stopped
+[2026-02-23 22:49:00] [INFO] [Electron] Stopping RustFS...
+[2026-02-23 22:49:00] [INFO] [Electron] RustFS stopped via PID
+[2026-02-23 22:49:00] [INFO] [Electron] Stopping PostgreSQL...
+[2026-02-23 22:49:00] [INFO] [Electron] PostgreSQL stopped via taskkill
+[2026-02-23 22:49:00] [INFO] [Electron] All services stopped
