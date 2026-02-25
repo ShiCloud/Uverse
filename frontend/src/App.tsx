@@ -113,11 +113,20 @@ interface DbStatusResult {
   error?: string
 }
 
+interface BackendStatus {
+  running: boolean
+  pid?: number
+  pgConfigStatus?: 'ok' | 'not_found' | 'error'
+  pgConfigError?: string
+}
+
 function App() {
   // 路径检查状态
   const [pathsValid, setPathsValid] = useState<boolean | null>(null)
   // 数据库状态
   const [dbValid, setDbValid] = useState<boolean | null>(null)
+  // PostgreSQL 配置状态
+  const [pgConfigStatus, setPgConfigStatus] = useState<'ok' | 'not_found' | 'error' | null>(null)
   // 服务是否就绪
   const [servicesReady, setServicesReady] = useState(false)
   // 最小加载时间是否已过
@@ -134,6 +143,30 @@ function App() {
   // 检查服务状态 - 在Loading页面完成
   useEffect(() => {
     const checkServices = async () => {
+      // 首先检查 Electron 后端状态（包括 PostgreSQL 配置状态）
+      let electronBackendStatus: BackendStatus | null = null
+      try {
+        if (window.electronAPI?.getBackendStatus) {
+          electronBackendStatus = await window.electronAPI.getBackendStatus()
+          console.log('[App] Electron 后端状态:', electronBackendStatus)
+          
+          // 如果 PostgreSQL 配置有问题，记录下来并保存到 localStorage
+          if (electronBackendStatus.pgConfigStatus && electronBackendStatus.pgConfigStatus !== 'ok') {
+            setPgConfigStatus(electronBackendStatus.pgConfigStatus)
+            console.error('[App] PostgreSQL 配置问题:', electronBackendStatus.pgConfigError)
+            // 保存到 localStorage，Settings 页面可以读取显示
+            localStorage.setItem('pg_config_error', electronBackendStatus.pgConfigError || '')
+            localStorage.setItem('pg_config_status', electronBackendStatus.pgConfigStatus)
+          } else {
+            // 清除之前的错误
+            localStorage.removeItem('pg_config_error')
+            localStorage.removeItem('pg_config_status')
+          }
+        }
+      } catch (err) {
+        console.error('[App] 获取 Electron 后端状态失败:', err)
+      }
+
       // 等待后端就绪
       const result = await waitForReady({
         initialDelay: 300,
@@ -143,6 +176,13 @@ function App() {
 
       if (!result.ready) {
         console.error('[App] 服务启动失败:', result.error)
+        // 如果是因为 PostgreSQL 配置问题导致失败，特殊处理
+        if (electronBackendStatus?.pgConfigStatus === 'not_found') {
+          setPathsValid(false)
+          setDbValid(false)
+          setServicesReady(true)
+          return
+        }
         setPathsValid(false)
         setDbValid(false)
         setServicesReady(true)
@@ -195,7 +235,9 @@ function App() {
 
   // 服务就绪且最小加载时间已过，显示主界面
   const allValid = pathsValid === true && dbValid === true
-  const defaultRoute = allValid ? '/documents' : '/settings'
+  const hasPgConfigIssue = pgConfigStatus === 'not_found' || pgConfigStatus === 'error'
+  // 如果有 PostgreSQL 配置问题，强制跳转到设置页面
+  const defaultRoute = (allValid && !hasPgConfigIssue) ? '/documents' : '/settings'
   
   return (
     <Router>

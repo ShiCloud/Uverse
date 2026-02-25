@@ -244,14 +244,23 @@ a_main = Analysis(
 )
 
 # ============================================
-# pdf-worker Analysis（使用相同的依赖）
+# pdf-worker Analysis（支持热更新）
 # ============================================
+# pdf-worker.exe 包含内置的 pdf_wrapper 代码
+# 但如果外部存在 pdf_wrapper.py，会优先使用外部代码（支持热更新）
+
 a_worker = Analysis(
-    [str(backend_dir / 'workers/pdf_wrapper.py')],
+    [str(backend_dir / 'workers' / 'pdf_worker.py')],  # 引导脚本作为主入口
     pathex=[str(backend_dir)],
-    binaries=[],  # 二进制文件已在主程序中
-    datas=[],     # 数据文件已在主程序中
-    hiddenimports=SHARED_HIDDENIMPORTS,  # 使用完全相同的依赖列表
+    binaries=[],
+    datas=[],
+    hiddenimports=SHARED_HIDDENIMPORTS + [
+        # 确保 pdf_wrapper 被打包为模块
+        'workers.pdf_wrapper',
+        'pdf_wrapper',
+        # 基础模块
+        'pathlib', 'json', 'datetime', 'argparse', 'traceback', 're',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(backend_dir / 'runtime_hook.py')],
@@ -309,7 +318,7 @@ exe_worker = EXE(
     entitlements_file=None,
 )
 
-# 合并收集到同一个目录（共享 _internal）
+# 合并收集到 backend 目录下（使用 'backend' 作为目录名）
 coll = COLLECT(
     exe_main,
     exe_worker,
@@ -321,5 +330,5 @@ coll = COLLECT(
     a_worker.datas,
     strip=False,
     upx=False,
-    name='uverse-backend'
+    name='backend'
 )

@@ -336,9 +336,18 @@ export async function downloadMarkdownWithImages(fileId: string, filename: strin
 
 // ==================== 解析日志 API ====================
 
-// 获取解析日志（一次性获取）
-export async function getParseLogs(taskId: string, limit: number = 100): Promise<{ task_id: string; logs: LogEntry[]; total: number }> {
-  const response = await fetch(`${API_BASE_URL}/documents/parse/logs/${taskId}?limit=${limit}`)
+// 获取解析日志（轮询使用）
+export interface ParseLogsResponse {
+  task_id: string
+  logs: LogEntry[]
+  total: number      // 总日志数
+  returned: number   // 返回的日志数
+  offset: number     // 跳过的日志数
+  has_more: boolean  // 是否还有更多日志
+}
+
+export async function getParseLogs(taskId: string, limit: number = 5000, offset: number = 0): Promise<ParseLogsResponse> {
+  const response = await fetch(`${API_BASE_URL}/documents/parse/logs/${taskId}?limit=${limit}&offset=${offset}`)
 
   if (!response.ok) {
     const error = await response.json()
@@ -346,115 +355,4 @@ export async function getParseLogs(taskId: string, limit: number = 100): Promise
   }
 
   return response.json()
-}
-
-// SSE 连接管理器接口
-export interface LogStreamManager {
-  close: () => void
-  reconnect: () => void
-  isConnected: () => boolean
-}
-
-// 创建 SSE 连接获取实时日志（带自动重连）
-export function createParseLogsStream(
-  taskId: string, 
-  onLog: (entry: LogEntry) => void, 
-  onError?: (error: Event) => void,
-  onReconnect?: (attempt: number) => void
-): LogStreamManager {
-  let eventSource: EventSource | null = null
-  let reconnectAttempts = 0
-  let maxReconnectAttempts = 10
-  let reconnectDelay = 1000 // 初始重连延迟 1 秒
-  let maxReconnectDelay = 30000 // 最大重连延迟 30 秒
-  let isManuallyClosed = false
-  let reconnectTimer: number | null = null
-
-  const connect = () => {
-    if (isManuallyClosed) return
-
-    try {
-      eventSource = new EventSource(`${API_BASE_URL}/documents/parse/logs/${taskId}/stream`)
-      
-      eventSource.onopen = () => {
-        reconnectAttempts = 0 // 重置重连计数
-        reconnectDelay = 1000 // 重置重连延迟
-      }
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          // 忽略心跳消息
-          if (data.type === 'heartbeat') return
-          onLog(data)
-        } catch (e) {
-          console.error('[LogStream] 解析日志消息失败:', e)
-        }
-      }
-      
-      eventSource.onerror = (error) => {
-        // 如果不是手动关闭，尝试重连
-        if (!isManuallyClosed && eventSource?.readyState === EventSource.CLOSED) {
-          attemptReconnect()
-        }
-        
-        if (onError) onError(error)
-      }
-    } catch (error) {
-      console.error('[LogStream] 创建连接失败:', error)
-      attemptReconnect()
-    }
-  }
-
-  const attemptReconnect = () => {
-    if (isManuallyClosed) return
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      console.error('[LogStream] 达到最大重连次数，停止重连')
-      return
-    }
-
-    reconnectAttempts++
-    console.log(`[LogStream] ${reconnectAttempts}/${maxReconnectAttempts} 秒后重连...`)
-    
-    if (onReconnect) onReconnect(reconnectAttempts)
-
-    // 使用指数退避算法增加延迟
-    const delay = Math.min(reconnectDelay * Math.pow(2, reconnectAttempts - 1), maxReconnectDelay)
-    
-    reconnectTimer = window.setTimeout(() => {
-      connect()
-    }, delay)
-  }
-
-  const close = () => {
-    isManuallyClosed = true
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
-    }
-  }
-
-  const reconnect = () => {
-    close()
-    isManuallyClosed = false
-    reconnectAttempts = 0
-    connect()
-  }
-
-  const isConnected = () => {
-    return eventSource?.readyState === EventSource.OPEN
-  }
-
-  // 开始连接
-  connect()
-
-  return {
-    close,
-    reconnect,
-    isConnected
-  }
 }

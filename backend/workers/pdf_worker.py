@@ -1,150 +1,63 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PDF 解析工作进程 - 独立进程执行 MinerU 解析
-作为可执行文件直接运行，不需要外部 Python
-
-注意：此文件主要用于打包后的独立进程模式。
-新的线程池方案（process_pool.py）通常更推荐使用。
+PDF Worker 引导程序 - 支持热更新
+1. 优先尝试加载外部的 pdf_wrapper.py（支持修改不重新打包）
+2. 如果外部不存在，使用内置的代码
 """
-import os
 import sys
+import os
+from pathlib import Path
 
-# 设置 Python 使用 UTF-8 编码
-os.environ['PYTHONIOENCODING'] = 'utf-8'
-os.environ['PYTHONUTF8'] = '1'
-
-# PyInstaller 兼容性 - 必须在任何其他导入之前调用
-try:
-    import multiprocessing
-    multiprocessing.freeze_support()
-    try:
-        multiprocessing.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass
-except ImportError:
-    pass
-
-
-def parse_pdf_sync(
-    pdf_path: str,
-    doc_id: str,
-    output_dir: str,
-    config_path: str,
-    device: str = "cpu"
-) -> dict:
-    """
-    同步执行 PDF 解析
+def find_external_wrapper():
+    """查找外部的 pdf_wrapper.py"""
+    exe_dir = Path(sys.executable).parent
     
-    Args:
-        pdf_path: PDF 文件路径
-        doc_id: 文档 ID
-        output_dir: 输出目录
-        config_path: MinerU 配置文件路径
-        device: 设备模式 (cpu/cuda)
+    possible_paths = [
+        # 可执行文件同级目录下的 workers
+        exe_dir / "workers" / "pdf_wrapper.py",
+        # 父目录下的 workers（Electron 资源目录结构）
+        exe_dir.parent / "workers" / "pdf_wrapper.py",
+        # 上两级目录
+        exe_dir.parent.parent / "workers" / "pdf_wrapper.py",
+    ]
     
-    Returns:
-        解析结果字典
-    """
-    from pathlib import Path
+    for path in possible_paths:
+        if path.exists():
+            return path
     
-    try:
-        # 设置环境变量 - 禁用多进程
-        os.environ["MINERU_TOOLS_CONFIG_JSON"] = config_path
-        os.environ['MINERU_DEVICE_MODE'] = device
-        os.environ['MINERU_MODEL_SOURCE'] = 'local'
-        os.environ["MINERU_PDF_RENDER_THREADS"] = "1"
-        
-        # Monkey-patch: 让 MinerU 认为是 Windows 环境
-        import mineru.utils.check_sys_env
-        mineru.utils.check_sys_env.is_windows_environment = lambda: True
-        
-        # 导入 MinerU
-        from mineru.cli.common import do_parse, read_fn
-        
-        # 创建输出目录
-        doc_output_dir = Path(output_dir) / doc_id
-        doc_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 读取 PDF
-        pdf_bytes = read_fn(pdf_path)
-        pdf_file_name = Path(pdf_path).stem
-        
-        # 执行解析
-        do_parse(
-            output_dir=str(doc_output_dir),
-            pdf_file_names=[pdf_file_name],
-            pdf_bytes_list=[pdf_bytes],
-            p_lang_list=["ch"],
-            backend="pipeline",
-            parse_method="auto",
-            formula_enable=True,
-            table_enable=True,
-            f_draw_layout_bbox=False,
-            f_draw_span_bbox=False,
-            f_dump_md=True,
-            f_dump_middle_json=False,
-            f_dump_model_output=False,
-            f_dump_orig_pdf=False,
-            f_dump_content_list=False,
-        )
-        
-        # 查找生成的 Markdown 文件
-        md_file = None
-        for f in doc_output_dir.rglob("*.md"):
-            md_file = str(f)
-            break
-        
-        # 查找图片目录
-        images_dir = doc_output_dir / "images"
-        if not images_dir.exists():
-            for subdir in doc_output_dir.rglob("images"):
-                if subdir.is_dir():
-                    images_dir = subdir
-                    break
-        
-        # 输出结果
-        result = {
-            "success": True,
-            "output_dir": str(doc_output_dir),
-            "markdown_file": md_file,
-            "images_dir": str(images_dir) if images_dir.exists() else None,
-        }
-        return result
-        
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        return {
-            "success": False,
-            "error": str(e),
-            "traceback": error_detail
-        }
-
+    return None
 
 def main():
-    """主函数 - 解析命令行参数并执行解析"""
-    import json
+    """主入口"""
+    external_path = find_external_wrapper()
     
-    if len(sys.argv) < 6:
-        print(json.dumps({"success": False, "error": "参数不足"}), file=sys.stderr)
-        sys.exit(1)
-    
-    pdf_path = sys.argv[1]
-    doc_id = sys.argv[2]
-    output_dir = sys.argv[3]
-    config_path = sys.argv[4]
-    device = sys.argv[5] if len(sys.argv) > 5 else "cpu"
-    
-    result = parse_pdf_sync(pdf_path, doc_id, output_dir, config_path, device)
-    
-    if result["success"]:
-        print(json.dumps(result))
-        sys.exit(0)
+    if external_path:
+        # 使用外部脚本（支持热更新）
+        # 输出到 stdout 而不是 stderr，避免被标记为 ERROR
+        print(f"[pdf-worker] Loading external: {external_path}", flush=True)
+        with open(external_path, 'r', encoding='utf-8') as f:
+            code = f.read()
+        
+        # 设置执行环境
+        script_globals = {
+            '__name__': '__main__',
+            '__file__': str(external_path),
+        }
+        exec(compile(code, str(external_path), 'exec'), script_globals)
     else:
-        print(json.dumps(result), file=sys.stderr)
-        sys.exit(1)
+        # 使用内置代码
+        # 输出到 stdout 而不是 stderr，避免被标记为 ERROR
+        print(f"[pdf-worker] Using built-in code", flush=True)
+        # 导入并执行内置的 pdf_wrapper main 函数
+        try:
+            from workers.pdf_wrapper import main
+            main()
+        except ImportError:
+            # 如果导入失败，尝试直接执行 __main__ 块
+            import workers.pdf_wrapper
+            if hasattr(workers.pdf_wrapper, 'main'):
+                workers.pdf_wrapper.main()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

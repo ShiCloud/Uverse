@@ -175,12 +175,21 @@ let config = {
     storeDir: '',
     modelsDir: '',
     tempDir: '',
+    mineruOutputDir: '',
     debug: false,
     logLevel: 'INFO'
 };
+function getResourcesPath() {
+    if (!electron_1.app.isPackaged) {
+        return path.join(__dirname, '../..');
+    }
+    // 使用 exe 所在目录下的 resources 目录
+    return path.join(path.dirname(electron_1.app.getPath('exe')), 'resources');
+}
 function loadEnvConfig() {
-    const resourcePath = electron_1.app.isPackaged ? process.resourcesPath : path.join(__dirname, '../..');
+    const resourcePath = getResourcesPath();
     const envPath = path.join(resourcePath, 'backend', '.env');
+    safeLog('[Electron] Checking .env at:', envPath);
     if (!fs.existsSync(envPath)) {
         safeLog('[Electron] .env not found, using defaults');
         return;
@@ -218,6 +227,7 @@ function loadEnvConfig() {
         config.storeDir = env['STORE_DIR'] || '';
         config.modelsDir = env['MODELS_DIR'] || '';
         config.tempDir = env['TEMP_DIR'] || '';
+        config.mineruOutputDir = env['MINERU_OUTPUT_DIR'] || '';
         config.debug = (env['DEBUG'] || 'false').toLowerCase() === 'true';
         config.logLevel = env['LOG_LEVEL'] || 'INFO';
         safeLog('[Electron] Config loaded:', {
@@ -232,10 +242,18 @@ function loadEnvConfig() {
         safeError('[Electron] Failed to load .env:', e);
     }
 }
+function getBackendPath() {
+    return path.join(getResourcesPath(), 'backend');
+}
 function resolveConfigPaths() {
-    const resourcePath = electron_1.app.isPackaged ? process.resourcesPath : path.join(__dirname, '../..');
-    const backendPath = path.join(resourcePath, 'backend');
-    // 如果没有配置路径，使用默认�?
+    const backendPath = getBackendPath();
+    if (!backendPath) {
+        safeError('[Electron] Cannot resolve backend path');
+        return;
+    }
+    safeLog('[Electron] Resolving paths with base:', backendPath);
+    // 如果没有配置路径，使用默认�?backendPath 下的子目录
+    // 如果是相对路径，解析为基于 backendPath 的绝对路径
     if (!config.postgresDir) {
         config.postgresDir = path.join(backendPath, 'postgres');
     }
@@ -254,6 +272,25 @@ function resolveConfigPaths() {
     else if (!path.isAbsolute(config.modelsDir)) {
         config.modelsDir = path.resolve(backendPath, config.modelsDir);
     }
+    if (!config.tempDir) {
+        config.tempDir = path.join(backendPath, 'temp');
+    }
+    else if (!path.isAbsolute(config.tempDir)) {
+        config.tempDir = path.resolve(backendPath, config.tempDir);
+    }
+    if (!config.mineruOutputDir) {
+        config.mineruOutputDir = path.join(backendPath, 'outputs');
+    }
+    else if (!path.isAbsolute(config.mineruOutputDir)) {
+        config.mineruOutputDir = path.resolve(backendPath, config.mineruOutputDir);
+    }
+    safeLog('[Electron] Resolved paths:', {
+        postgresDir: config.postgresDir,
+        storeDir: config.storeDir,
+        modelsDir: config.modelsDir,
+        tempDir: config.tempDir,
+        mineruOutputDir: config.mineruOutputDir
+    });
 }
 // ==================== 全局状�?====================
 let mainWindow = null;
@@ -262,6 +299,9 @@ let pgProcess = null;
 let rustfsProcess = null;
 let backendProcess = null;
 let isQuitting = false;
+// PostgreSQL 配置状态
+let pgConfigStatus = 'ok';
+let pgConfigError = '';
 // ==================== 服务停止 ====================
 function stopPostgres(force = false) {
     safeLog('[Electron] Stopping PostgreSQL...');
@@ -374,8 +414,13 @@ function startPostgres() {
     const logFile = path.join(config.postgresDir, 'logfile');
     if (!fs.existsSync(pgCtl)) {
         safeError('[Electron] pg_ctl not found:', pgCtl);
+        pgConfigStatus = 'not_found';
+        pgConfigError = `PostgreSQL 未找到: ${pgCtl}\n请在设置中配置正确的 PostgreSQL 路径`;
         return false;
     }
+    // 重置状态
+    pgConfigStatus = 'ok';
+    pgConfigError = '';
     // 初始化数据目录（如果不存在）
     if (!fs.existsSync(dataDir)) {
         safeLog('[Electron] Initializing PostgreSQL data directory...');
@@ -408,10 +453,13 @@ function startPostgres() {
         });
         pgProcess.on('close', () => { pgProcess = null; });
         safeLog('[Electron] PostgreSQL start command issued');
+        pgConfigStatus = 'ok';
         return true;
     }
     catch (e) {
         safeError('[Electron] Failed to start PostgreSQL:', e);
+        pgConfigStatus = 'error';
+        pgConfigError = `启动 PostgreSQL 失败: ${e?.message || String(e)}`;
         return false;
     }
 }
@@ -450,20 +498,12 @@ function startRustfs() {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'] // 捕获 stdout 和 stderr
         });
-        // 转发 RustFS 日志到 Electron 日志
+        // 转发 RustFS 日志到 Electron 日志（只监听 stdout）
         rustfsProcess.stdout?.on('data', (data) => {
             const lines = data.toString().trim().split('\n');
             for (const line of lines) {
                 if (line.trim()) {
                     safeLog(`[RustFS] ${line}`);
-                }
-            }
-        });
-        rustfsProcess.stderr?.on('data', (data) => {
-            const lines = data.toString().trim().split('\n');
-            for (const line of lines) {
-                if (line.trim()) {
-                    safeError(`[RustFS] ${line}`);
                 }
             }
         });
@@ -478,9 +518,11 @@ function startRustfs() {
 }
 async function startBackend() {
     safeLog('[Electron] Starting Python backend on port', config.backendPort);
-    const backendPath = electron_1.app.isPackaged
-        ? path.join(process.resourcesPath, 'backend')
-        : path.join(__dirname, '../../backend');
+    const backendPath = getBackendPath();
+    if (!backendPath || !fs.existsSync(backendPath)) {
+        safeError('[Electron] Backend directory not found:', backendPath);
+        return false;
+    }
     // 构建 DATABASE_URL
     const dbUrl = `postgresql://${config.dbUser}:${config.dbPassword}@${config.dbHost}:${config.pgPort}/${config.dbName}`;
     const env = {
@@ -503,6 +545,7 @@ async function startBackend() {
         STORE_DIR: config.storeDir,
         MODELS_DIR: config.modelsDir,
         TEMP_DIR: config.tempDir,
+        MINERU_OUTPUT_DIR: config.mineruOutputDir,
         DEBUG: String(config.debug),
         LOG_LEVEL: config.logLevel
     };
@@ -614,7 +657,6 @@ async function startAllServices() {
         stopAllServices(true);
         return false;
     }
-    safeLog('[Electron] All services started successfully');
     return true;
 }
 // ==================== 窗口管理 ====================
@@ -817,7 +859,9 @@ electron_1.ipcMain.handle('backend:getStatus', async () => ({
         req.on('error', () => resolve(false));
         req.setTimeout(500, () => { req.destroy(); resolve(false); });
     }),
-    pid: backendProcess?.pid
+    pid: backendProcess?.pid,
+    pgConfigStatus,
+    pgConfigError
 }));
 electron_1.ipcMain.handle('backend:restart', async () => {
     stopBackend();

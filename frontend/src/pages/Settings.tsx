@@ -108,6 +108,8 @@ function Settings() {
   const [hideDbError, setHideDbError] = useState(false)
   // 是否隐藏路径错误提示
   const [hidePathErrors, setHidePathErrors] = useState(false)
+  // PostgreSQL 配置错误（从 localStorage 读取）
+  const [pgConfigError, setPgConfigError] = useState<string | null>(null)
 
   // 密码/密钥类配置项
   const PASSWORD_KEYS = ['OPENAI_API_KEY', 'SECRET_KEY', 'API_KEY', 'TOKEN']
@@ -215,6 +217,15 @@ function Settings() {
   // 主要配置加载 - 优先执行
   useEffect(() => {
     loadConfigs()
+    
+    // 从 localStorage 读取 PostgreSQL 配置错误
+    const savedPgError = localStorage.getItem('pg_config_error')
+    if (savedPgError) {
+      setPgConfigError(savedPgError)
+      // 显示错误后清除，避免重复显示
+      localStorage.removeItem('pg_config_error')
+      localStorage.removeItem('pg_config_status')
+    }
   }, [])
 
   // 日志加载 - 延迟执行，不阻塞配置显示
@@ -1175,13 +1186,21 @@ function Settings() {
             </Alert>
           )}
           
-          {/* 路径配置错误提示 */}
-          {Object.keys(pathErrors).length > 0 && !hidePathErrors && (
+          {/* 路径配置错误提示 - 包含 PostgreSQL 配置错误 */}
+          {(Object.keys(pathErrors).length > 0 || pgConfigError) && !hidePathErrors && (
             <Alert variant="destructive" className="border-red-400 bg-red-50 relative pr-10">
               <FolderOpen className="h-4 w-4 flex-shrink-0" />
               <AlertDescription className="flex flex-col gap-1">
                 <span className="font-semibold">路径配置检查失败</span>
                 <div className="text-sm opacity-90 mt-1 space-y-1">
+                  {/* PostgreSQL 配置错误（从 localStorage 读取） */}
+                  {pgConfigError && (
+                    <div className="flex items-start gap-2">
+                      <Database className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                      <span>{pgConfigError}</span>
+                    </div>
+                  )}
+                  {/* 其他路径错误 */}
                   {Object.entries(pathErrors).map(([key, error]) => (
                     <div key={key}>• {error}</div>
                   ))}
@@ -1189,7 +1208,7 @@ function Settings() {
                 <span className="text-sm mt-1">请检查上方的目录配置是否正确。</span>
               </AlertDescription>
               <button
-                onClick={() => setHidePathErrors(true)}
+                onClick={() => { setHidePathErrors(true); setPgConfigError(null); }}
                 className="absolute top-2 right-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-100 rounded-md transition-colors"
                 title="关闭提示"
               >

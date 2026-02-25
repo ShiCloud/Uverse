@@ -4,10 +4,9 @@ import {
   AlertCircle,
   CheckCircle2,
   RefreshCw,
-  Wifi,
-  WifiOff,
   X,
-  Square
+  Square,
+  Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { 
@@ -17,7 +16,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { getParseLogs, createParseLogsStream, stopParse, type LogEntry, type LogStreamManager } from '../utils/storage_api'
+import { getParseLogs, stopParse, type LogEntry } from '../utils/storage_api'
 
 interface ParseLogDialogProps {
   isOpen: boolean
@@ -28,12 +27,6 @@ interface ParseLogDialogProps {
   onStatusChange?: (status: string) => void
 }
 
-// MinerU 后端类型说明：
-// - pipeline: 通用解析模式（默认）
-// - vlm-auto-engine: 高精度本地推理，Mac 自动使用 MLX
-// - hybrid-auto-engine: 下一代高精度本地推理
-// 注意: 不支持 vlm-mlx-engine，请使用 vlm-auto-engine
-
 // 日志级别颜色映射
 const levelColors: Record<string, string> = {
   'INFO': 'text-gray-300',
@@ -41,6 +34,12 @@ const levelColors: Record<string, string> = {
   'WARNING': 'text-yellow-400',
   'DEBUG': 'text-gray-500',
 }
+
+// 最大保留日志数量（防止内存溢出）
+const MAX_LOGS_IN_MEMORY = 5000
+// 轮询间隔（毫秒）- 根据状态动态调整
+const POLL_INTERVAL_ACTIVE = 1000   // 解析中：1秒
+const POLL_INTERVAL_COMPLETED = 5000  // 已完成：5秒
 
 export function ParseLogDialog({ 
   isOpen, 
@@ -51,28 +50,13 @@ export function ParseLogDialog({
   onStatusChange
 }: ParseLogDialogProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [isConnected, setIsConnected] = useState(false)
-  const [reconnectAttempt, setReconnectAttempt] = useState(0)
+  const [isLoading, setIsLoading] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
-  const streamManagerRef = useRef<LogStreamManager | null>(null)
+  const [totalLogs, setTotalLogs] = useState(0)
+  const [isTruncated, setIsTruncated] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
-
-  // 当弹窗打开/关闭时重置 isStopping 和 hasLoadedRef
-  useEffect(() => {
-    if (isOpen) {
-      setIsStopping(false)
-    } else {
-      // 弹窗关闭时重置 hasLoadedRef，以便下次打开可以重新加载
-      hasLoadedRef.current = false
-    }
-  }, [isOpen])
-
-  // 监听外部 status 变化，当是 stopped 时重置 isStopping
-  useEffect(() => {
-    if (status === 'stopped') {
-      setIsStopping(false)
-    }
-  }, [status])
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const lastLogCountRef = useRef(0)
 
   // 滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -81,109 +65,123 @@ export function ParseLogDialog({
     }
   }, [])
 
-  // 使用 ref 防止 React 18 严格模式下的重复加载
-  const hasLoadedRef = useRef(false)
+  // 加载日志 - 使用增量加载
+  const loadLogs = useCallback(async () => {
+    if (!taskId || !isOpen) return
+    
+    try {
+      // 计算需要获取的日志数量
+      const neededLimit = Math.max(lastLogCountRef.current + 100, 500)
+      const response = await getParseLogs(taskId, Math.min(neededLimit, 5000))
+      
+      setTotalLogs(response.total)
+      
+      // 如果日志太多，只保留最新的
+      let newLogs = response.logs
+      if (newLogs.length > MAX_LOGS_IN_MEMORY) {
+        newLogs = newLogs.slice(-MAX_LOGS_IN_MEMORY)
+        setIsTruncated(true)
+      } else {
+        setIsTruncated(false)
+      }
+      
+      setLogs(prev => {
+        // 只有日志数量变化时才更新
+        if (response.logs.length !== lastLogCountRef.current) {
+          lastLogCountRef.current = response.logs.length
+          return newLogs
+        }
+        return prev
+      })
+    } catch (error) {
+      console.error('加载日志失败:', error)
+    }
+  }, [taskId, isOpen])
 
-  // 加载历史日志并建立 SSE 连接（打包模式下使用轮询）
+  // 清空本地日志缓存
+  const handleClearLogs = () => {
+    setLogs([])
+    lastLogCountRef.current = 0
+  }
+
+  // 首次加载和轮询
   useEffect(() => {
     if (!isOpen || !taskId) return
 
-    // 防止重复加载（React 18 严格模式会挂载组件两次）
-    if (hasLoadedRef.current) return
-    hasLoadedRef.current = true
-
     // 重置状态
+    lastLogCountRef.current = 0
     setLogs([])
-    setReconnectAttempt(0)
-
-    // 首先加载历史日志
-    const loadHistoryLogs = async () => {
-      try {
-        const response = await getParseLogs(taskId, 500)
-        setLogs(response.logs)
-        setTimeout(scrollToBottom, 100)
-      } catch (error) {
-        console.error('加载历史日志失败:', error)
-      }
-    }
-
-    loadHistoryLogs()
-
-    // 检测是否在 Electron 打包环境（使用轮询）
-    const isElectronPackaged = window.electronAPI?.isElectron
+    setIsTruncated(false)
     
-    if (isElectronPackaged) {
-      // 打包环境：使用轮询（SSE 在同步解析时无法工作）
-      console.log('[ParseLogDialog] Using polling mode for logs')
-      setIsConnected(true)
-      
-      let lastLogCount = 0
-      const pollInterval = setInterval(async () => {
-        try {
-          const response = await getParseLogs(taskId, 1000)
-          if (response.logs.length !== lastLogCount) {
-            setLogs(response.logs)
-            lastLogCount = response.logs.length
-          }
-        } catch (error) {
-          console.error('轮询日志失败:', error)
-        }
-      }, 2000) // 每 2 秒轮询一次
+    // 立即加载一次
+    loadLogs()
+    
+    // 根据状态设置轮询间隔
+    const interval = (status === 'processing' || status === 'parsing') 
+      ? POLL_INTERVAL_ACTIVE 
+      : POLL_INTERVAL_COMPLETED
+    
+    pollIntervalRef.current = setInterval(loadLogs, interval)
 
-      return () => {
-        clearInterval(pollInterval)
-      }
-    } else {
-      // 开发环境：使用 SSE
-      console.log('[ParseLogDialog] Using SSE mode for logs')
-      const MAX_LOGS = 5000  // 前端最多保留 5000 条日志
-      const streamManager = createParseLogsStream(
-        taskId,
-        (entry) => {
-          setLogs(prev => {
-            const newLogs = [...prev, entry]
-            // 超过限制时保留最新的日志
-            if (newLogs.length > MAX_LOGS) {
-              return newLogs.slice(-MAX_LOGS)
-            }
-            return newLogs
-          })
-        },
-        (error) => {
-          console.error('日志流错误:', error)
-          setIsConnected(false)
-        },
-        (attempt) => {
-          setReconnectAttempt(attempt)
-        }
-      )
-
-      streamManagerRef.current = streamManager
-
-      // 定期检查连接状态
-      const checkConnection = setInterval(() => {
-        setIsConnected(streamManager.isConnected())
-      }, 1000)
-
-      return () => {
-        clearInterval(checkConnection)
-        streamManager.close()
-        streamManagerRef.current = null
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
       }
     }
-  }, [isOpen, taskId, scrollToBottom])
+    // 注意：只监听 isOpen 和 taskId，status 变化在另一个 effect 处理
+  }, [isOpen, taskId, loadLogs])
 
-  // 自动滚动到底部
+  // 状态变化时调整轮询间隔（不重置日志）
   useEffect(() => {
-    scrollToBottom()
-  }, [logs, scrollToBottom])
-
-  // 手动重连
-  const handleReconnect = () => {
-    if (streamManagerRef.current) {
-      streamManagerRef.current.reconnect()
-      setReconnectAttempt(0)
+    if (!isOpen || !taskId) return
+    
+    // 清除旧轮询
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
     }
+    
+    // 设置新轮询间隔
+    const interval = (status === 'processing' || status === 'parsing') 
+      ? POLL_INTERVAL_ACTIVE 
+      : POLL_INTERVAL_COMPLETED
+    
+    pollIntervalRef.current = setInterval(loadLogs, interval)
+    
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+      }
+    }
+    // 注意：不监听 loadLogs，避免不必要的重新创建
+  }, [status])
+
+  // 自动滚动到底部（仅在解析中时）
+  useEffect(() => {
+    if (status === 'processing' || status === 'parsing') {
+      scrollToBottom()
+    }
+  }, [logs, scrollToBottom, status])
+
+  // 当弹窗打开时重置 isStopping
+  useEffect(() => {
+    if (isOpen) {
+      setIsStopping(false)
+    }
+  }, [isOpen])
+
+  // 监听外部 status 变化
+  useEffect(() => {
+    if (status === 'stopped') {
+      setIsStopping(false)
+    }
+  }, [status])
+
+  // 手动刷新
+  const handleRefresh = async () => {
+    setIsLoading(true)
+    await loadLogs()
+    setIsLoading(false)
   }
 
   // 停止解析
@@ -227,7 +225,7 @@ export function ParseLogDialog({
         return <Square className="w-5 h-5 text-orange-500" />
       case 'processing':
       case 'parsing':
-        return <Terminal className="w-5 h-5 text-blue-500" />
+        return <Terminal className="w-5 h-5 text-blue-500 animate-pulse" />
       default:
         return <Terminal className="w-5 h-5 text-gray-500" />
     }
@@ -270,29 +268,39 @@ export function ParseLogDialog({
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* 连接状态 + Task ID */}
+              {/* 日志统计 */}
               <div className="flex items-center gap-2 text-xs text-gray-500">
-                {isConnected ? (
-                  <Wifi className="w-3.5 h-3.5 text-green-500" />
-                ) : (
-                  <WifiOff className="w-3.5 h-3.5 text-red-500" />
+                <span>日志: {totalLogs}</span>
+                {isTruncated && (
+                  <span className="text-yellow-500" title="仅显示最新 5000 条">
+                    (已截断)
+                  </span>
                 )}
-                <span className={isConnected ? 'text-green-500' : 'text-red-500'}>
-                  {isConnected ? '已连接' : reconnectAttempt > 0 ? `重连 ${reconnectAttempt}` : '断开'}
-                </span>
                 <span className="text-gray-600">|</span>
                 <span>Task: {taskId}</span>
-                {!isConnected && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleReconnect}
-                    className="h-6 px-1.5 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                  </Button>
-                )}
               </div>
+              
+              {/* 清空缓存按钮 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearLogs}
+                title="清空本地缓存"
+                className="h-8 px-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
+              
+              {/* 刷新按钮 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRefresh}
+                disabled={isLoading}
+                className="h-8 px-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              </Button>
               
               {/* 状态标签 */}
               <span className={`px-2 py-1 rounded text-xs font-medium ${

@@ -2,6 +2,7 @@
 PDF 解析进程池 - 使用子进程执行 MinerU 解析
 
 核心设计：通过独立子进程执行 MinerU，可以强制终止，实现真正的取消功能。
+日志直接写入文件，前端通过 API 轮询读取。
 """
 import os
 import sys
@@ -13,7 +14,7 @@ import subprocess
 import signal
 import tempfile
 import platform
-from typing import Dict, Optional, Any, Callable
+from typing import Dict, Optional, Any
 from pathlib import Path
 
 # 获取 logger
@@ -54,17 +55,12 @@ def _clear_cancel_signal(task_id: str):
 
 
 def _kill_process_tree(process: subprocess.Popen) -> bool:
-    """
-    终止进程及其子进程树
-    返回是否成功终止
-    """
+    """终止进程及其子进程树"""
     if process.poll() is not None:
-        # 进程已经结束
         return True
     
     try:
         if _IS_WINDOWS:
-            # Windows: 使用 taskkill 终止进程树
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(process.pid)],
@@ -75,7 +71,6 @@ def _kill_process_tree(process: subprocess.Popen) -> bool:
                 return True
             except Exception as e:
                 logger.error(f"[ProcessPool] Windows 终止进程失败: {e}")
-                # 备用：直接 terminate
                 try:
                     process.terminate()
                     process.wait(timeout=2)
@@ -87,30 +82,22 @@ def _kill_process_tree(process: subprocess.Popen) -> bool:
                         pass
                 return True
         else:
-            # Unix/Linux/macOS: 使用进程组信号
             try:
-                # 获取进程组 ID，终止整个进程组
                 pgid = os.getpgid(process.pid)
                 os.killpg(pgid, signal.SIGTERM)
-                
-                # 等待一段时间让进程优雅退出
                 try:
                     process.wait(timeout=3)
                     return True
                 except subprocess.TimeoutExpired:
                     pass
-                
-                # 如果还在运行，强制终止
                 if process.poll() is None:
                     os.killpg(pgid, signal.SIGKILL)
                     process.wait(timeout=1)
                 return True
             except ProcessLookupError:
-                # 进程已经不存在
                 return True
             except Exception as e:
                 logger.error(f"[ProcessPool] 终止进程组失败: {e}")
-                # 备用：直接 kill
                 try:
                     process.kill()
                     return True
@@ -122,27 +109,15 @@ def _kill_process_tree(process: subprocess.Popen) -> bool:
 
 
 def stop_parse_process(task_id: str) -> bool:
-    """
-    强制停止解析进程
-    
-    Args:
-        task_id: 任务 ID
-        
-    Returns:
-        是否成功发送终止信号
-    """
+    """强制停止解析进程"""
     logger.info(f"[ProcessPool] 尝试停止任务 {task_id}")
-    
-    # 设置取消信号（让子进程自己检测并优雅退出）
     _set_cancel_signal(task_id)
     
-    # 强制终止进程
     with _process_lock:
         if task_id in _running_processes:
             process = _running_processes[task_id]
             logger.info(f"[ProcessPool] 终止进程 PID {process.pid}")
             success = _kill_process_tree(process)
-            # 不立即从字典移除，让 parse_pdf_in_process 清理
             return success
     
     logger.info(f"[ProcessPool] 未找到运行中的进程 {task_id}")
@@ -150,31 +125,13 @@ def stop_parse_process(task_id: str) -> bool:
 
 
 def _get_worker_executable() -> Optional[Path]:
-    """
-    获取 PDF Worker 可执行文件路径（打包环境下使用独立的 worker 可执行文件）
-    """
+    """获取 PDF Worker 可执行文件路径（打包环境下使用）"""
     if hasattr(sys, '_MEIPASS'):
-        # 打包环境：查找 pdf-worker 可执行文件
-        meipass = Path(sys._MEIPASS)
-        
-        # 在 macOS 上，目录结构是：
-        # Uverse.app/Contents/Resources/backend/uverse-backend/_internal/
-        # Uverse.app/Contents/Resources/backend/pdf-worker/
-        # 所以 _MEIPASS 是 uverse-backend/_internal，需要向上两级再找 pdf-worker
-        
-        # 可能的 worker 路径（macOS 应用包结构）
+        exe_dir = Path(sys.executable).parent
         worker_paths = [
-            # combined.spec 模式：pdf-worker 与 uverse-backend 同级
-            # _MEIPASS = uverse-backend/_internal, parent = uverse-backend/
-            meipass.parent / 'pdf-worker',
-            # onedir 模式：与 uverse-backend 同级的 pdf-worker 目录
-            meipass.parent.parent / 'pdf-worker' / 'pdf-worker',
-            # 备用：在 _internal 内部
-            meipass / 'pdf-worker' / 'pdf-worker',
-            meipass / 'pdf-worker',
+            exe_dir / 'pdf-worker',
+            Path(sys._MEIPASS) / 'pdf-worker',
         ]
-        
-        # Windows 可执行文件扩展名
         if _IS_WINDOWS:
             worker_paths = [p.with_suffix('.exe') for p in worker_paths]
         
@@ -183,177 +140,77 @@ def _get_worker_executable() -> Optional[Path]:
                 logger.info(f"[ProcessPool] 找到 PDF Worker: {worker_path}")
                 return worker_path
         
-        # 调试信息
-        logger.warning(f"[ProcessPool] 未找到 pdf-worker，_MEIPASS={meipass}")
-        logger.warning(f"[ProcessPool] 尝试过的路径: {[str(p) for p in worker_paths]}")
+        logger.warning(f"[ProcessPool] 未找到 pdf-worker")
     return None
 
 
 def _get_python_executable() -> str:
-    """获取 Python 解释器路径（仅在无法使用独立 worker 时调用）"""
-    # 检查是否在 PyInstaller 打包环境中
+    """获取 Python 解释器路径"""
     if hasattr(sys, '_MEIPASS'):
-        # 打包环境中 sys.executable 是打包后的二进制，不是 Python
-        # 需要找到系统中的 Python 解释器
         import shutil
-        
-        # 优先尝试系统默认 Python 路径（避免使用开发环境虚拟环境）
         system_pythons = [
             '/usr/bin/python3',
             '/usr/local/bin/python3',
-            '/opt/homebrew/bin/python3',  # macOS ARM64 Homebrew
-            '/opt/local/bin/python3',     # MacPorts
+            '/opt/homebrew/bin/python3',
+            '/opt/local/bin/python3',
         ]
-        
         for python_path in system_pythons:
             if os.path.exists(python_path) and os.access(python_path, os.X_OK):
-                logger.info(f"[ProcessPool] 打包模式，使用系统 Python: {python_path}")
                 return python_path
         
-        # 备用：尝试使用 PATH 中的 python3，但要过滤开发环境路径
         python_cmd = shutil.which('python3')
-        if python_cmd:
-            # 避免使用开发环境虚拟环境的 Python
-            if '.venv' not in python_cmd and 'virtualenv' not in python_cmd:
-                logger.info(f"[ProcessPool] 打包模式，使用 PATH Python: {python_cmd}")
-                return python_cmd
-            else:
-                logger.warning(f"[ProcessPool] 找到的 Python 在虚拟环境中，尝试其他选项: {python_cmd}")
-        
-        # 最后尝试 python
-        python_cmd = shutil.which('python')
         if python_cmd and '.venv' not in python_cmd:
-            logger.info(f"[ProcessPool] 打包模式，使用 python: {python_cmd}")
             return python_cmd
         
-        # 如果没有找到，返回 sys.executable 让调用者处理错误
+        python_cmd = shutil.which('python')
+        if python_cmd and '.venv' not in python_cmd:
+            return python_cmd
+        
         logger.error(f"[ProcessPool] 打包模式，未找到合适的系统 Python")
     return sys.executable
 
 
 def _get_wrapper_script_path() -> Path:
     """获取 wrapper 脚本路径"""
-    # 在开发环境中，使用相对于 backend 目录的路径
-    # 实际的 wrapper 脚本是 workers/pdf_wrapper.py
     backend_dir = Path(__file__).parent.parent
     wrapper_path = backend_dir / "workers" / "pdf_wrapper.py"
     
-    logger.info(f"[ProcessPool] 尝试开发环境路径: {wrapper_path} (exists={wrapper_path.exists()})")
     if wrapper_path.exists():
         return wrapper_path
     
-    # 在 PyInstaller 打包环境中，使用 _MEIPASS
     if hasattr(sys, '_MEIPASS'):
-        logger.info(f"[ProcessPool] PyInstaller 模式，_MEIPASS={sys._MEIPASS}")
-        # PyInstaller onedir 模式下，数据文件在 _internal 目录
-        wrapper_path = Path(sys._MEIPASS) / "workers" / "pdf_wrapper.py"
-        logger.info(f"[ProcessPool] 尝试 _MEIPASS 路径: {wrapper_path} (exists={wrapper_path.exists()})")
-        if wrapper_path.exists():
-            return wrapper_path
-        # 尝试 _internal 子目录
-        wrapper_path = Path(sys._MEIPASS) / "_internal" / "workers" / "pdf_wrapper.py"
-        logger.info(f"[ProcessPool] 尝试 _MEIPASS/_internal 路径: {wrapper_path} (exists={wrapper_path.exists()})")
-        if wrapper_path.exists():
-            return wrapper_path
-        # 兼容旧的路径结构（如果打包时文件被放在根目录）
-        wrapper_path = Path(sys._MEIPASS) / "pdf_wrapper.py"
-        logger.info(f"[ProcessPool] 尝试 _MEIPASS 根目录: {wrapper_path} (exists={wrapper_path.exists()})")
-        if wrapper_path.exists():
-            return wrapper_path
+        # 打包模式下尝试多个路径
+        exe_dir = Path(sys.executable).parent
+        possible_paths = [
+            exe_dir / "workers" / "pdf_wrapper.py",
+            exe_dir.parent / "workers" / "pdf_wrapper.py",
+            Path(sys._MEIPASS) / "workers" / "pdf_wrapper.py",
+            Path(sys._MEIPASS).parent / "workers" / "pdf_wrapper.py",
+        ]
+        
+        for path in possible_paths:
+            if path.exists():
+                return path
+        
+        # 如果没找到，返回第一个路径（让调用者处理错误）
+        return possible_paths[0]
     
-    # 如果找不到，假设它在当前目录或 PYTHONPATH 中
-    wrapper_path = Path("pdf_wrapper.py")
-    logger.info(f"[ProcessPool] 尝试当前目录路径: {wrapper_path} (exists={wrapper_path.exists()})")
-    if wrapper_path.exists():
-        return wrapper_path
-    
-    # 最后尝试 _internal 子目录（相对路径）
-    wrapper_path = Path("_internal") / "workers" / "pdf_wrapper.py"
-    logger.info(f"[ProcessPool] 尝试相对 _internal 路径: {wrapper_path} (exists={wrapper_path.exists()})")
-    if wrapper_path.exists():
-        return wrapper_path
-    
-    logger.error(f"[ProcessPool] 找不到 pdf_wrapper.py")
-    return wrapper_path  # 返回默认路径，让调用者处理不存在的情况
+    return wrapper_path
 
 
-class LogInterceptor:
-    """拦截子进程的日志输出"""
+def _get_backend_dir() -> Path:
+    """获取 backend 目录路径 - 兼容打包模式"""
+    # 打包模式 (PyInstaller)
+    if hasattr(sys, '_MEIPASS'):
+        # 尝试从可执行文件位置推导
+        exe_dir = Path(sys.executable).parent
+        # 如果在 _internal 目录中，向上查找
+        if "_internal" in str(exe_dir):
+            return exe_dir.parent
+        return exe_dir
     
-    def __init__(self, task_id: str, log_callback: Optional[Callable[[str, str], None]] = None):
-        self.task_id = task_id
-        self.log_callback = log_callback
-        self._stopped = False
-        self._thread: Optional[threading.Thread] = None
-    
-    def start_intercept(self, pipe):
-        """开始拦截管道输出"""
-        self._thread = threading.Thread(
-            target=self._intercept_thread,
-            args=(pipe,),
-            daemon=True
-        )
-        self._thread.start()
-    
-    def _intercept_thread(self, pipe):
-        """拦截线程 - 使用原始字节读取避免编码问题"""
-        try:
-            # 直接使用二进制管道（Popen 返回的 pipe 现在就是二进制模式）
-            binary_pipe = pipe
-            
-            while not self._stopped:
-                try:
-                    # 直接读取字节
-                    byte_line = binary_pipe.readline()
-                    
-                    if not byte_line:
-                        break
-                    
-                    # 手动解码为 UTF-8
-                    try:
-                        line = byte_line.decode('utf-8')
-                    except UnicodeDecodeError:
-                        line = byte_line.decode('utf-8', errors='replace')
-                    
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    try:
-                        # 尝试解析 JSON 日志
-                        data = json.loads(line)
-                        if data.get("type") == "log":
-                            level = data.get("level", "INFO")
-                            message = data.get("message", "")
-                            if self.log_callback:
-                                self.log_callback(level, message)
-                            continue
-                    except json.JSONDecodeError:
-                        pass
-                    
-                    # 非 JSON 输出，直接记录
-                    if self.log_callback:
-                        self.log_callback("INFO", line)
-                        
-                except Exception as e:
-                    if not self._stopped:
-                        logger.debug(f"[ProcessPool] 日志拦截行处理异常: {e}")
-                    break
-        except Exception as e:
-            if not self._stopped:
-                logger.error(f"[ProcessPool] 日志拦截异常: {e}")
-        finally:
-            try:
-                pipe.close()
-            except:
-                pass
-    
-    def stop(self):
-        """停止拦截"""
-        self._stopped = True
-        if self._thread and self._thread.is_alive():
-            # 等待线程结束，最多 2 秒
-            self._thread.join(timeout=2)
+    # 开发模式：从当前文件 (workers/pool.py) 推导
+    return Path(__file__).parent.parent
 
 
 async def parse_pdf_in_process(
@@ -363,52 +220,43 @@ async def parse_pdf_in_process(
     output_dir: str,
     config_path: str,
     device: str = "cpu",
-    backend: str = "pipeline"
+    backend: str = "pipeline",
+    filename: str = None
 ) -> Dict[str, Any]:
     """
     使用子进程执行 PDF 解析
-    
-    优势：
-    1. 可以完全终止进程（包括子进程树）
-    2. 进程崩溃不会影响主服务
-    3. 资源隔离更好
+    日志直接写入文件，不通过 stderr 捕获
     """
-    logger.info(f"[ProcessPool] 开始解析任务 {task_id} (子进程模式)")
+    logger.info(f"[ProcessPool] 开始解析任务 {task_id}")
     
     # 清理之前的取消信号
     _clear_cancel_signal(task_id)
-    
     cancel_signal_path = _get_cancel_signal_path(task_id)
     
-    # 优先尝试使用独立的 PDF Worker 可执行文件（打包环境）
+    # 日志文件路径（使用 task_id 命名，确保一致性）
+    backend_dir = _get_backend_dir()
+    log_file = backend_dir / "logs" / "parse" / f"{task_id}.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 构建命令
     worker_exe = _get_worker_executable()
     
     if worker_exe:
-        # 使用独立的 worker 可执行文件（打包环境）
         cmd = [
             str(worker_exe),
             "--pdf-path", pdf_path,
             "--output-dir", output_dir,
             "--config-path", config_path,
             "--doc-id", doc_id,
+            "--task-id", task_id,
+            "--log-file", str(log_file.resolve()),
             "--device", device,
             "--cancel-check-file", str(cancel_signal_path),
         ]
-        logger.info(f"[ProcessPool] 使用独立 PDF Worker: {worker_exe}")
-        logger.info(f"[ProcessPool] 启动子进程: {cmd}")
-        
-        # 检查 worker 可执行文件
-        if not worker_exe.exists():
-            logger.error(f"[ProcessPool] PDF Worker 不存在: {worker_exe}")
-            return {
-                "success": False,
-                "error": f"PDF 解析器启动失败: worker 可执行文件不存在",
-            }
-        
-        # 设置工作目录为 worker 所在目录（某些依赖可能需要）
+        if filename:
+            cmd.extend(["--filename", filename])
         cwd = str(worker_exe.parent)
     else:
-        # 开发环境：使用 Python + wrapper 脚本
         python_exe = _get_python_executable()
         wrapper_script = _get_wrapper_script_path()
         
@@ -419,71 +267,40 @@ async def parse_pdf_in_process(
             "--output-dir", output_dir,
             "--config-path", config_path,
             "--doc-id", doc_id,
+            "--task-id", task_id,
+            "--log-file", str(log_file.resolve()),
             "--device", device,
             "--cancel-check-file", str(cancel_signal_path),
         ]
-        
-        logger.info(f"[ProcessPool] Python 解释器: {python_exe}")
-        logger.info(f"[ProcessPool] Wrapper 脚本: {wrapper_script} (exists={wrapper_script.exists()})")
-        logger.info(f"[ProcessPool] 启动子进程: {cmd}")
-        
-        # 检查 wrapper 脚本是否存在
-        if not wrapper_script.exists():
-            logger.error(f"[ProcessPool] Wrapper 脚本不存在: {wrapper_script}")
-            return {
-                "success": False,
-                "error": f"PDF 解析器启动失败: wrapper 脚本不存在",
-            }
-        
-        cwd = str(wrapper_script.parent) if wrapper_script.exists() else str(Path.cwd())
+        if filename:
+            cmd.extend(["--filename", filename])
+        cwd = str(_get_backend_dir()) if wrapper_script.exists() else str(Path.cwd())
     
-    # 设置日志回调
-    log_callback = None
-    try:
-        from core.parse_logger import get_parse_logger
-        from core.file_logger import get_file_log_manager
-        parse_logger = get_parse_logger()
-        file_log_manager = get_file_log_manager()
-        
-        def log_callback(level: str, message: str):
-            # 1. 发送到 ParseLogger（内存，用于前端实时显示）
-            parse_logger.add_log_sync(task_id, level, message)
-            # 2. 直接写入日志文件（绕过 logging 配置不确定性）
-            file_log_manager.add_log(
-                level=level,
-                message=f"[{task_id}] {message}",
-                source="mineru"
-            )
-    except Exception as e:
-        logger.warning(f"[ProcessPool] 无法设置日志回调: {e}")
-        log_callback = None
+    logger.info(f"[ProcessPool] 启动子进程: {cmd}")
     
     # 配置子进程启动参数
     startupinfo = None
     preexec_fn = None
     
     if _IS_WINDOWS:
-        # Windows: 隐藏控制台窗口
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
+        startupinfo.wShowWindow = 0
     else:
-        # Unix: 创建新进程组
         preexec_fn = os.setsid
     
-    # 设置子进程环境变量，确保 UTF-8 编码
+    # 设置环境变量
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
     env['PYTHONUTF8'] = '1'
     
-    # 启动子进程（使用二进制模式避免 Windows 文本编码问题）
+    # 启动子进程（stdout 用于输出结果，stderr 捕获日志）
     try:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,  # 二进制模式使用无缓冲
-            text=False,  # 二进制模式
+            stderr=subprocess.PIPE,  # 捕获 stderr 用于日志
+            text=False,   # 使用二进制模式，避免编码问题
             startupinfo=startupinfo,
             preexec_fn=preexec_fn,
             cwd=cwd,
@@ -500,88 +317,168 @@ async def parse_pdf_in_process(
     with _process_lock:
         _running_processes[task_id] = process
     
-    # 启动日志拦截（只拦截 stderr）
-    log_interceptor = LogInterceptor(task_id, log_callback)
-    if process.stderr:
-        log_interceptor.start_intercept(process.stderr)
+    # 导入 parse_file_logger 用于写入任务日志
+    from core.parse_file_logger import get_parse_file_logger
+    parse_logger = get_parse_file_logger()
+    
+    # 用于收集子进程输出的线程
+    stderr_lines = []
+    stderr_buffer_queue = []  # 缓冲区队列
+    stderr_buffer_lock = threading.Lock()
+    stderr_stop_event = threading.Event()
+    
+    # 收集 stdout 的缓冲区（关键：防止 stdout 缓冲区满导致死锁）
+    stdout_buffer = []
+    stdout_buffer_lock = threading.Lock()
+    
+    def read_stderr():
+        """在后台线程读取子进程 stderr 并写入缓冲区"""
+        nonlocal stderr_buffer_queue
+        if process.stderr:
+            try:
+                # 使用更大的缓冲区读取
+                while not stderr_stop_event.is_set():
+                    line = process.stderr.readline()
+                    if not line:
+                        break
+                    try:
+                        line_str = line.decode('utf-8').strip()
+                        if line_str:
+                            with stderr_buffer_lock:
+                                stderr_lines.append(line_str)
+                                stderr_buffer_queue.append(line_str)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    
+    def read_stdout():
+        """在后台线程读取子进程 stdout - 防止缓冲区满导致死锁"""
+        nonlocal stdout_buffer
+        if process.stdout:
+            try:
+                while not stderr_stop_event.is_set():
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    try:
+                        line_str = line.decode('utf-8').strip()
+                        if line_str:
+                            with stdout_buffer_lock:
+                                stdout_buffer.append(line_str)
+                            # 同时处理日志行（打包模式下 pdf_wrapper 输出日志到 stdout）
+                            _process_log_line(line_str)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    
+    def _process_log_line(line_str: str):
+        """处理日志行 - 从 stdout/stderr 提取日志并写入文件"""
+        try:
+            # 解析日志级别和内容（格式: [LEVEL] message）
+            if line_str.startswith('[') and ']' in line_str:
+                level_end = line_str.find(']')
+                level = line_str[1:level_end]
+                msg = line_str[level_end+1:].strip()
+                if level in ['INFO', 'WARNING', 'ERROR', 'DEBUG']:
+                    # 写入任务日志文件
+                    parse_logger.add_log(task_id, level, msg)
+                    # 同时输出到后端日志
+                    logger.info(f"[PDFWorker] {msg}")
+                else:
+                    # 不是标准日志级别，但作为 INFO 记录
+                    parse_logger.add_log(task_id, 'INFO', line_str)
+                    logger.info(f"[PDFWorker] {line_str}")
+        except Exception:
+            pass
+    
+    def process_stderr_buffer():
+        """处理 stderr 缓冲区中的日志行"""
+        nonlocal stderr_buffer_queue
+        with stderr_buffer_lock:
+            if not stderr_buffer_queue:
+                return
+            # 复制并清空缓冲区
+            lines_to_process = stderr_buffer_queue[:]
+            stderr_buffer_queue = []
+        
+        # 在锁外处理日志，减少锁持有时间
+        for line_str in lines_to_process:
+            _process_log_line(line_str)
+    
+    # 启动后台线程读取 stdout 和 stderr（关键：必须同时读取，防止死锁）
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
     
     try:
-        # 等待子进程完成或取消
+        # 等待子进程完成
         logger.info(f"[ProcessPool] 等待子进程 PID {process.pid} 完成...")
         
-        # 创建异步任务来等待进程
-        def wait_process():
-            """在线程中等待进程，避免阻塞事件循环"""
-            try:
-                returncode = process.wait()
-                # 只读取 stdout，stderr 由拦截器处理
-                stdout_bytes = process.stdout.read() if process.stdout else b""
-                # 解码为 UTF-8 字符串
-                try:
-                    stdout = stdout_bytes.decode('utf-8') if stdout_bytes else ""
-                except UnicodeDecodeError:
-                    stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
-                return returncode, stdout
-            except Exception as e:
-                logger.error(f"[ProcessPool] wait_process 异常: {e}")
-                return -1, ""
-        
-        loop = asyncio.get_event_loop()
-        # 使用 run_in_executor 创建 Future，然后用 wrap_future 包装
-        executor_future = loop.run_in_executor(None, wait_process)
-        
-        # 同时等待进程完成和检查取消
-        cancelled_during_wait = False
-        returncode = -1
-        stdout = ""
-        
-        # 使用更简单的方式：检查进程状态并定期轮询
-        check_interval = 0.5  # 每 0.5 秒检查一次
+        check_interval = 0.5
         while True:
             # 检查进程是否结束
             if process.poll() is not None:
-                # 进程已结束，获取结果
-                try:
-                    returncode, stdout = await asyncio.wrap_future(executor_future)
-                except Exception as e:
-                    logger.error(f"[ProcessPool] 获取进程结果失败: {e}")
-                    returncode, stdout = process.returncode, ""
                 break
             
             # 检查是否被取消
             try:
                 from routers.documents import check_cancelled
                 if check_cancelled(task_id):
-                    logger.info(f"[ProcessPool] 检测到取消请求，终止子进程 {process.pid}")
-                    cancelled_during_wait = True
+                    logger.info(f"[ProcessPool] 检测到取消请求，终止子进程")
                     _kill_process_tree(process)
-                    # 等待进程实际结束
                     try:
-                        returncode, stdout = await asyncio.wait_for(
-                            asyncio.wrap_future(executor_future), 
-                            timeout=5.0
-                        )
-                    except asyncio.TimeoutError:
-                        returncode, stdout = -1, ""
-                    break
+                        process.wait(timeout=5.0)
+                    except:
+                        pass
+                    return {
+                        "success": False,
+                        "error": "任务已被用户取消",
+                        "cancelled": True
+                    }
             except Exception as e:
                 logger.debug(f"[ProcessPool] 检查取消状态时出错: {e}")
             
-            # 等待一小段时间
+            # 定期处理 stderr 缓冲区
+            process_stderr_buffer()
+            
             await asyncio.sleep(check_interval)
         
-        # 停止日志拦截
-        log_interceptor.stop()
+        # 停止读取线程
+        stderr_stop_event.set()
+        # 最后处理一次缓冲区
+        process_stderr_buffer()
+        # 刷新日志缓冲区
+        parse_logger.flush_task_buffer(task_id)
+        # 等待读取线程结束
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
         
-        # 检查是否被取消（优先于 returncode 检查）
-        if cancelled_during_wait or check_cancelled(task_id):
-            return {
-                "success": False,
-                "error": "任务已被用户取消",
-                "cancelled": True
-            }
+        # 获取返回码和 stdout
+        returncode = process.returncode
         
-        # 检查取消信号文件（备用方式）
+        # 从缓冲区获取 stdout（已经从后台线程读取）
+        with stdout_buffer_lock:
+            stdout_lines = stdout_buffer[:]
+        
+        # 如果缓冲区为空，尝试直接读取（备用方案）
+        if not stdout_lines and process.stdout:
+            try:
+                remaining = process.stdout.read()
+                if remaining:
+                    try:
+                        stdout_text = remaining.decode('utf-8')
+                    except UnicodeDecodeError:
+                        stdout_text = remaining.decode('gbk', errors='replace')
+                    stdout_lines = [line.strip() for line in stdout_text.strip().split('\n') if line.strip()]
+            except Exception as e:
+                logger.warning(f"[ProcessPool] 读取剩余 stdout 失败: {e}")
+        
+        logger.info(f"[ProcessPool] 进程返回码: {returncode}")
+        
+        # 检查是否被取消
         if _get_cancel_signal_path(task_id).exists():
             return {
                 "success": False,
@@ -590,46 +487,27 @@ async def parse_pdf_in_process(
             }
         
         # 检查返回码
-        logger.info(f"[ProcessPool] 进程返回码: {returncode}")
         if returncode != 0:
-            # 可能是被信号终止（如 SIGTERM=15, SIGKILL=9）
-            if returncode < 0:
-                signal_name = f"信号 {-returncode}"
-                try:
-                    signal_name = signal.Signals(-returncode).name
-                except:
-                    pass
-                logger.warning(f"[ProcessPool] 进程被 {signal_name} 终止")
-                
-                # 如果取消标志已设置，视为正常取消
-                if check_cancelled(task_id):
-                    return {
-                        "success": False,
-                        "error": "任务已被用户取消",
-                        "cancelled": True
-                    }
-            
-            # 解析失败
             error_msg = f"解析进程失败 (exit code: {returncode})"
-            logger.error(f"[ProcessPool] 解析失败，stdout 前500字符: {stdout[:500] if stdout else '空'}")
+            # 尝试从 stdout 解析错误
+            for line in reversed(stdout_lines):
+                line = line.strip()
+                if line:
+                    try:
+                        result = json.loads(line)
+                        if isinstance(result, dict) and "error" in result:
+                            error_msg = result.get("error", error_msg)
+                            break
+                    except json.JSONDecodeError:
+                        continue
             
-            try:
-                # 尝试从 stdout 解析错误
-                if stdout:
-                    lines = stdout.strip().split('\n')
-                    for line in reversed(lines):
-                        line = line.strip()
-                        if line:
-                            try:
-                                result = json.loads(line)
-                                if isinstance(result, dict) and "error" in result:
-                                    error_msg = result.get("error", error_msg)
-                                    logger.info(f"[ProcessPool] 从 stdout 解析到错误: {error_msg}")
-                                    break
-                            except json.JSONDecodeError:
-                                continue
-            except Exception as e:
-                logger.error(f"[ProcessPool] 解析错误信息失败: {e}")
+            # 记录错误到日志
+            parse_logger.add_log(task_id, "ERROR", error_msg)
+            # 如果有 stderr 输出，也记录到日志
+            for line in stderr_lines[-20:]:  # 记录最后20行stderr
+                if line:
+                    parse_logger.add_log(task_id, "ERROR", f"STDERR: {line}")
+            parse_logger.flush_task_buffer(task_id)
             
             return {
                 "success": False,
@@ -637,42 +515,24 @@ async def parse_pdf_in_process(
             }
         
         # 解析 stdout 获取结果
-        logger.info(f"[ProcessPool] 解析 stdout，总长度: {len(stdout) if stdout else 0}")
-        try:
-            # 最后一行应该是 JSON 结果
-            lines = stdout.strip().split('\n') if stdout else []
-            logger.info(f"[ProcessPool] stdout 行数: {len(lines)}")
-            
-            for line in reversed(lines):
-                line = line.strip()
-                if line:
-                    try:
-                        result = json.loads(line)
-                        if isinstance(result, dict) and "success" in result:
-                            logger.info(f"[ProcessPool] 解析完成: success={result.get('success')}")
-                            return result
-                    except json.JSONDecodeError:
-                        continue
-            
-            # 没有找到有效结果
-            logger.error(f"[ProcessPool] 未找到有效 JSON 结果，stdout 最后500字符: {stdout[-500:] if stdout else '空'}")
-            return {
-                "success": False,
-                "error": "无法解析子进程输出",
-            }
-            
-        except Exception as e:
-            logger.error(f"[ProcessPool] 解析结果失败: {e}")
-            return {
-                "success": False,
-                "error": f"解析结果失败: {e}",
-            }
-            
+        for line in reversed(stdout_lines):
+            line = line.strip()
+            if line:
+                try:
+                    result = json.loads(line)
+                    if isinstance(result, dict) and "success" in result:
+                        return result
+                except json.JSONDecodeError:
+                    continue
+        
+        return {
+            "success": False,
+            "error": "无法解析子进程输出",
+        }
+        
     except asyncio.CancelledError:
-        # 当前 asyncio 任务被取消（可能是 FastAPI 后台任务取消）
-        logger.info(f"[ProcessPool] asyncio 任务被取消，终止子进程并返回取消结果")
+        logger.info(f"[ProcessPool] asyncio 任务被取消")
         _kill_process_tree(process)
-        # 返回取消结果而不是抛出异常，让调用方正常处理
         return {
             "success": False,
             "error": "任务已被取消",
@@ -687,9 +547,6 @@ async def parse_pdf_in_process(
         }
         
     finally:
-        # 停止日志拦截
-        log_interceptor.stop()
-        
         # 从字典中移除
         with _process_lock:
             _running_processes.pop(task_id, None)
@@ -699,16 +556,5 @@ async def parse_pdf_in_process(
         
         # 确保进程已终止
         if process.poll() is None:
-            logger.warning(f"[ProcessPool] 进程 {process.pid} 仍未终止，强制杀死")
+            logger.warning(f"[ProcessPool] 进程仍未终止，强制杀死")
             _kill_process_tree(process)
-
-
-def _check_cancelled(task_id: str) -> bool:
-    """检查任务是否被取消（从 documents 模块导入）"""
-    if task_id:
-        try:
-            from routers.documents import check_cancelled
-            return check_cancelled(task_id)
-        except:
-            pass
-    return False

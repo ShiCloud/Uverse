@@ -11,7 +11,13 @@ interface ElectronAPI {
   getPlatform: () => Promise<string>
   
   // 后端服务
-  getBackendStatus: () => Promise<{ running: boolean; pid?: number; port?: number }>
+  getBackendStatus: () => Promise<{ 
+    running: boolean
+    pid?: number
+    port?: number
+    pgConfigStatus?: 'ok' | 'not_found' | 'error'
+    pgConfigError?: string
+  }>
   restartBackend: () => Promise<{ success: boolean }>
   
   // 系统操作

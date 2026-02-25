@@ -1,7 +1,8 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo   Build Uverse (Backend + Frontend)
+echo   Build Uverse Full Package (with data)
+echo   Includes: postgres, store, models, out
 echo ========================================
 echo.
 
@@ -63,9 +64,55 @@ echo [OK] Backend built successfully
 echo.
 
 :: ========================================
-:: 步骤2: 准备 winCodeSign 缓存
+:: 步骤2: 检查数据目录
 :: ========================================
-echo [*] Step 2: Preparing winCodeSign cache...
+echo [*] Step 2: Checking data directories...
+
+set MISSING_DIRS=0
+
+if not exist "%BACKEND_DIR%\postgres" (
+    echo [WARN] postgres directory not found: %BACKEND_DIR%\postgres
+    set MISSING_DIRS=1
+) else (
+    echo [OK] Found postgres directory
+)
+
+if not exist "%BACKEND_DIR%\store" (
+    echo [WARN] store directory not found: %BACKEND_DIR%\store
+    set MISSING_DIRS=1
+) else (
+    echo [OK] Found store directory
+)
+
+if not exist "%BACKEND_DIR%\models" (
+    echo [WARN] models directory not found: %BACKEND_DIR%\models
+    set MISSING_DIRS=1
+) else (
+    echo [OK] Found models directory
+)
+
+if not exist "%BACKEND_DIR%\out" (
+    echo [WARN] out directory not found: %BACKEND_DIR%\out
+    mkdir "%BACKEND_DIR%\out" 2>nul
+    echo [INFO] Created empty out directory
+) else (
+    echo [OK] Found out directory
+)
+
+if %MISSING_DIRS%==1 (
+    echo.
+    echo [WARN] Some data directories are missing!
+    echo The package will be built but may not work correctly.
+    choice /C YN /M "Continue anyway"
+    if errorlevel 2 exit /b 1
+)
+
+echo.
+
+:: ========================================
+:: 步骤3: 准备 winCodeSign 缓存
+:: ========================================
+echo [*] Step 3: Preparing winCodeSign cache...
 
 if not exist "%SOURCE_FILE%" (
     echo [ERROR] winCodeSign source not found: %SOURCE_FILE%
@@ -95,23 +142,29 @@ if exist "%WIN_SIGN_DIR%\windows-10" (
 echo.
 
 :: ========================================
-:: 步骤3: 构建 Frontend
+:: 步骤4: 构建 Frontend (使用完整配置)
 :: ========================================
-echo [*] Step 3: Building Frontend...
+echo [*] Step 4: Building Frontend with full config...
 echo.
 
 cd /d "%FRONTEND_DIR%"
 
 set ELECTRON_BUILDER_CACHE=%CACHE_DIR%
-npm run build && npm run build:electron && electron-builder --win
+npm run build && npm run build:electron && electron-builder --win --config electron-builder-full.yml
 
-if errorlevel 1 (
+set BUILD_RESULT=%errorlevel%
+
+echo.
+
+:: ========================================
+:: 完成
+:: ========================================
+if %BUILD_RESULT% neq 0 (
     echo [ERROR] Frontend build failed!
     pause
     exit /b 1
 )
 
-echo.
 echo ========================================
 echo   Build Complete!
 echo ========================================
@@ -119,6 +172,12 @@ echo.
 echo Output files:
 echo   - Backend: %BACKEND_DIR%\dist\backend\
 echo   - Frontend: %FRONTEND_DIR%\release\Uverse-*-win.zip
+echo.
+echo This package includes:
+echo   - PostgreSQL binaries (postgres/)
+echo   - RustFS storage (store/)
+echo   - AI Models (models/)
+echo   - Output files (out/)
 echo.
 
 exit /b 0

@@ -31,11 +31,17 @@ from mineru.cli.common import do_parse, read_fn
 
 
 class LoguruInterceptor:
-    """拦截 loguru 日志并传递给回调函数"""
+    """
+    拦截 loguru 日志并传递给回调函数
+    
+    重要：这个拦截器会完全接管 loguru 的输出，移除默认的 stderr 输出，
+    防止日志被重复捕获。
+    """
     
     def __init__(self, log_callback: Optional[Callable[[str, str], None]] = None):
         self.log_callback = log_callback
         self._handler_id = None
+        self._original_handlers = []
     
     def __call__(self, message):
         """接收 loguru 日志消息"""
@@ -46,23 +52,33 @@ class LoguruInterceptor:
             self.log_callback(level, msg)
     
     def start(self):
-        """开始拦截日志"""
-        # 添加自定义 sink
+        """开始拦截 - 移除所有默认 handler，只保留我们的 interceptor"""
+        # 保存当前的 handlers 配置（用于恢复）
+        self._original_handlers = list(logger._core.handlers.values())
+        
+        # 移除所有现有的 handler（包括默认的 stderr 输出）
+        logger.remove()
+        
+        # 添加我们的 interceptor 作为唯一的 handler
         self._handler_id = logger.add(
             self,
-            level="INFO",
+            level="DEBUG",
             format="{message}",
             catch=False
         )
     
     def stop(self):
-        """停止拦截日志"""
+        """停止拦截 - 恢复原来的配置"""
         if self._handler_id is not None:
-            try:
-                logger.remove(self._handler_id)
-            except:
-                pass
+            logger.remove(self._handler_id)
             self._handler_id = None
+            
+            # 恢复原来的 handlers
+            for handler in self._original_handlers:
+                try:
+                    logger.add(handler)
+                except:
+                    pass
     
     def __enter__(self):
         self.start()
@@ -72,42 +88,65 @@ class LoguruInterceptor:
         self.stop()
 
 
-class TqdmInterceptor(io.StringIO):
-    """拦截 tqdm 进度条输出并传递给回调函数"""
+class TqdmInterceptor(io.TextIOBase):
+    """
+    拦截 tqdm 进度条输出
+    
+    注意：由于 LoguruInterceptor 已经移除了 loguru 的 stderr 输出，
+    这里只捕获真正的 tqdm 进度条输出。
+    """
     
     def __init__(self, log_callback: Optional[Callable[[str, str], None]] = None):
         super().__init__()
         self.log_callback = log_callback
         self._original_stderr = None
         self._buffer = ""
+        self._last_progress = ""
     
-    def write(self, s: str) -> int:
-        """拦截写入操作"""
-        # tqdm 使用 \r 来刷新行，我们累加缓冲区直到遇到换行符
+    def write(self, s) -> int:
+        """拦截写入操作 - 处理字符串或字节"""
+        # 处理字节输入
+        if isinstance(s, bytes):
+            try:
+                s = s.decode('utf-8')
+            except:
+                s = s.decode('utf-8', errors='replace')
+        
+        # 移除 ANSI 控制字符
+        import re
+        s = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', s)
+        
+        # 累加缓冲区
         self._buffer += s
         
-        # 处理缓冲区中的完整行
-        if '\n' in self._buffer or '\r' in self._buffer:
-            # 按换行符分割
-            lines = self._buffer.replace('\r', '\n').split('\n')
-            # 保留最后一个不完整的行
-            self._buffer = lines[-1]
-            # 处理完整的行
-            for line in lines[:-1]:
-                self._process_line(line)
+        # 处理缓冲区中的进度信息
+        if '\r' in self._buffer:
+            parts = self._buffer.rsplit('\r', 1)
+            self._buffer = parts[-1]
+            if parts[0]:
+                self._process_progress(parts[0])
         
-        return super().write(s)
+        return len(s)
     
-    def _process_line(self, line: str):
-        """处理单行输出"""
-        stripped = line.strip()
-        if stripped and self.log_callback:
-            # 移除 ANSI 控制字符
-            import re
-            clean_msg = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', stripped)
-            clean_msg = re.sub(r'\x1b\[\?\d+[lh]', '', clean_msg)  # 光标控制
-            if clean_msg:
-                self.log_callback("INFO", clean_msg)
+    def flush(self):
+        pass
+    
+    def _process_progress(self, text: str):
+        """处理进度条文本 - 只提取进度信息"""
+        if not self.log_callback:
+            return
+        
+        # 清理并提取进度行
+        lines = text.replace('\r', '\n').split('\n')
+        for line in lines:
+            line = line.strip()
+            # 只处理包含百分比的进度条行
+            if '%' in line and 'it/s' in line:
+                # 简化进度信息
+                clean_line = ' '.join(line.split())
+                if clean_line and clean_line != self._last_progress:
+                    self._last_progress = clean_line
+                    self.log_callback("INFO", clean_line)
     
     def start(self):
         """开始拦截 stderr"""
@@ -116,10 +155,6 @@ class TqdmInterceptor(io.StringIO):
     
     def stop(self):
         """恢复原始 stderr"""
-        # 处理缓冲区中剩余的内容
-        if self._buffer.strip():
-            self._process_line(self._buffer)
-        
         if self._original_stderr is not None:
             sys.stderr = self._original_stderr
             self._original_stderr = None
@@ -135,22 +170,26 @@ class TqdmInterceptor(io.StringIO):
 def get_mineru_config_path() -> str:
     """
     获取 MinerU 配置文件路径
-    如果 MODELS_DIR 环境变量被设置，动态生成配置文件并返回临时路径
-    否则返回默认的 mineru.json 路径
+    如果 MODELS_DIR 环境变量被设置且模型目录存在，更新 mineru.json 中的路径
+    返回 mineru.json 的路径
     """
     # 检测是否在 PyInstaller 打包环境中
     is_frozen = getattr(sys, 'frozen', False)
     
     if is_frozen:
-        project_root = Path(sys.executable).parent
+        # 打包环境下，exe 直接在 resources/backend/ 目录
+        # mineru.json 在 resources/backend/models/ 目录
+        backend_dir = Path(sys.executable).parent  # backend/
+        default_config_path = backend_dir / "models" / "mineru.json"
     else:
         project_root = Path(__file__).parent.parent.parent
+        default_config_path = project_root / "backend/models/mineru.json"
     
     models_dir_env = os.getenv("MODELS_DIR")
     
     if not models_dir_env:
         # 使用默认配置
-        return str(project_root / "backend/models/mineru.json")
+        return str(default_config_path)
     
     # 解析模型目录路径
     if os.path.isabs(models_dir_env):
@@ -160,46 +199,47 @@ def get_mineru_config_path() -> str:
         backend_dir = Path(__file__).parent.parent
         models_dir = backend_dir / models_dir_env
     
-    # 构建模型子目录路径
     models_dir = models_dir.resolve()
+    
+    # 检查模型目录是否存在
+    opendatalab_path = models_dir / "OpenDataLab"
+    if not opendatalab_path.exists():
+        print(f"[WARN] 模型目录不存在: {opendatalab_path}，使用默认配置")
+        return str(default_config_path)
+    
+    # 构建模型子目录的绝对路径
     pipeline_model = models_dir / "OpenDataLab/PDF-Extract-Kit-1___0"
     vlm_model = models_dir / "OpenDataLab/MinerU2___5-2509-1___2B"
     
-    # 动态生成配置
-    config = {
-        "bucket_info": {
-            "bucket-name-1": ["ak", "sk", "endpoint"],
-            "bucket-name-2": ["ak", "sk", "endpoint"]
-        },
-        "latex-delimiter-config": {
-            "display": {"left": "$$", "right": "$$"},
-            "inline": {"left": "$", "right": "$"}
-        },
-        "llm-aided-config": {
-            "title_aided": {
-                "api_key": "your_api_key",
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "model": "qwen3-next-80b-a3b-instruct",
-                "enable_thinking": False,
-                "enable": False
+    # 检查具体的模型子目录是否存在
+    if not pipeline_model.exists():
+        print(f"[WARN] Pipeline 模型不存在: {pipeline_model}")
+    if not vlm_model.exists():
+        print(f"[WARN] VLM 模型不存在: {vlm_model}")
+    
+    # 更新 mineru.json 中的 models-dir 为绝对路径
+    try:
+        if default_config_path.exists():
+            with open(default_config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # 更新 models-dir 为绝对路径
+            config["models-dir"] = {
+                "pipeline": str(pipeline_model),
+                "vlm": str(vlm_model)
             }
-        },
-        "models-dir": {
-            "pipeline": str(pipeline_model),
-            "vlm": str(vlm_model)
-        },
-        "config_version": "1.3.1"
-    }
+            
+            # 写回文件
+            with open(default_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            
+            print(f"[INFO] 已更新 mineru.json 模型路径: {models_dir}")
+        else:
+            print(f"[WARN] mineru.json 不存在: {default_config_path}")
+    except Exception as e:
+        print(f"[ERROR] 更新 mineru.json 失败: {e}")
     
-    # 写入临时配置文件
-    config_dir = models_dir
-    config_dir.mkdir(parents=True, exist_ok=True)
-    temp_config_path = config_dir / "mineru_runtime.json"
-    
-    with open(temp_config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
-    
-    return str(temp_config_path)
+    return str(default_config_path)
 
 
 def get_mineru_output_dir() -> Path:

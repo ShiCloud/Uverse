@@ -8,7 +8,12 @@ export interface ElectronAPI {
   getPlatform: () => Promise<string>
   
   // 后端服务
-  getBackendStatus: () => Promise<{ running: boolean; pid?: number }>
+  getBackendStatus: () => Promise<{ 
+    running: boolean
+    pid?: number
+    pgConfigStatus?: 'ok' | 'not_found' | 'error'
+    pgConfigError?: string
+  }>
   restartBackend: () => Promise<{ success: boolean }>
   
   // 环境信息

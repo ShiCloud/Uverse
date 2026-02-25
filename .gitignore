@@ -22,6 +22,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.log
+support/
 
 # Node
 node_modules/
@@ -60,4 +62,3 @@ models/
 out/
 release/
 dist-backend/
-backend/windows/vc_redist.x64.exe
