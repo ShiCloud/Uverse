@@ -8,7 +8,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000,  // 10秒超时，给后端启动足够时间
+  timeout: 30000,  // 30秒超时，给后端启动足够时间
 })
 
 // 健康检查
@@ -34,7 +34,7 @@ export const checkReady = async () => {
   }
 }
 
-// 等待服务就绪（带重试）
+// 等待服务就绪（带重试）- 适配后台初始化模式
 export const waitForReady = async (
   options: {
     maxRetries?: number
@@ -48,7 +48,7 @@ export const waitForReady = async (
   
   onStatus?.('checking', '正在检查服务状态...')
   
-  // 初始延迟，给后端服务启动时间，避免立即报错
+  // 初始延迟，给后端服务启动时间
   if (initialDelay > 0) {
     await new Promise(resolve => setTimeout(resolve, initialDelay))
   }
@@ -57,23 +57,27 @@ export const waitForReady = async (
     try {
       onChecking?.(attempt)
       const response = await api.get('/ready', {
-        // 静默请求，避免在控制台显示网络错误
         validateStatus: () => true,
       })
       
+      // 服务已就绪
       if (response.status === 200 && response.data.status === 'ready') {
-        onStatus?.('ready', '所有服务已就绪')
+        onStatus?.('ready', '服务已就绪')
         return { ready: true, data: response.data }
       }
       
-      // 如果是 503，说明服务还在启动中（这是正常的）
-      if (response.status === 503) {
+      // 服务正在启动中 (503 或 starting 状态)
+      if (response.status === 503 || response.data.status === 'starting') {
         const services = response.data?.services || {}
         const startingServices = Object.entries(services)
           .filter(([_, info]: [string, any]) => info?.status !== 'ok')
           .map(([name, _]) => name === 'database' ? '数据库' : name === 'rustfs' ? '存储服务' : name)
         
-        onStatus?.('starting', `正在启动: ${startingServices.join(', ')}...`)
+        const message = startingServices.length > 0 
+          ? `正在启动: ${startingServices.join(', ')}...`
+          : '服务正在启动中...'
+        
+        onStatus?.('starting', message)
         
         if (attempt < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, retryDelay))
@@ -81,7 +85,7 @@ export const waitForReady = async (
         }
       }
     } catch (error: any) {
-      // 连接被拒绝或网络错误是预期的（服务正在启动），静默重试
+      // 连接被拒绝 - 服务还未启动
       const isConnectionError = error.code === 'ECONNREFUSED' || 
                                 error.message?.includes('Network Error') ||
                                 error.message?.includes('connection refused')
@@ -96,14 +100,9 @@ export const waitForReady = async (
       if (attempt >= maxRetries) {
         const errorMsg = error.response?.data?.message || error.message || '服务启动超时'
         onStatus?.('error', errorMsg)
-        console.log(`[waitForReady] 最终错误: ${errorMsg}`)
-        return {
-          ready: false,
-          error: errorMsg
-        }
+        return { ready: false, error: errorMsg }
       }
       
-      // 其他错误，继续重试
       onStatus?.('starting', `连接失败，正在重试 (${attempt}/${maxRetries})...`)
       await new Promise(resolve => setTimeout(resolve, retryDelay))
     }

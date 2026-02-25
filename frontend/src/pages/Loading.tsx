@@ -10,10 +10,7 @@ export default function LoadingPage({ showLoading = true }: LoadingPageProps) {
   if (!showLoading) {
     return (
       <div className="min-h-screen bg-[#f5f5f5] flex items-center justify-center">
-        <div className="flex items-center gap-3 text-gray-500">
-          <div className="w-5 h-5 border-2 border-gray-300 border-t-green-600 rounded-full animate-spin" />
-          <span className="text-sm">正在启动服务...</span>
-        </div>
+        <div className="w-5 h-5 border-2 border-gray-300 border-t-green-600 rounded-full animate-spin" />
       </div>
     )
   }

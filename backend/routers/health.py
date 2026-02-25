@@ -19,7 +19,10 @@ class HealthStatus(BaseModel):
 async def check_database() -> Dict[str, Any]:
     """检查数据库连接状态 - 使用 SQLAlchemy（与应用一致）"""
     try:
-        from core.database import AsyncSessionLocal
+        from core.database import get_session_local
+        
+        # 获取会话工厂（自动初始化引擎）
+        AsyncSessionLocal = get_session_local()
         
         async with AsyncSessionLocal() as session:
             # 执行简单查询
@@ -71,18 +74,31 @@ async def health_check():
 async def readiness_check():
     """就绪检查端点 - 检查服务是否可响应
     
-    注意：即使某些可选服务（如 RustFS、PostgreSQL）不可用，
-    只要 API 服务本身启动成功，就返回 200，让前端可以正常访问配置页面。
+    后台初始化模式：API 服务启动后立即返回 ready，
+    后台任务异步完成数据库等初始化。
     """
-    # 检查各项服务（但不影响整体状态）
+    # 检查各项服务状态（异步，不阻塞）
     db_status = await check_database()
     rustfs_status = check_rustfs()
     
-    # 只要有 API 服务在运行，就返回 ready
-    # 前端会根据需要决定是否跳转到设置页面
-    all_ok = db_status["status"] == "ok" or rustfs_status["status"] == "ok"
+    # API 服务本身是否可用
+    api_ready = True
     
-    overall_status = "ready"  # 总是返回 ready，让前端可以访问
+    # 检查后台初始化是否完成
+    import sys
+    _main = sys.modules.get('__main__')
+    background_completed = getattr(_main, '_background_init_completed', False)
+    
+    # 确定整体状态
+    if db_status["status"] == "ok":
+        overall_status = "ready"
+        message = "所有服务已就绪"
+    elif not background_completed:
+        overall_status = "starting"
+        message = "服务正在启动中..."
+    else:
+        overall_status = "ready"
+        message = "API 服务已启动，数据库不可用"
     
     from fastapi.responses import JSONResponse
     
@@ -94,12 +110,17 @@ async def readiness_check():
         },
         "available": {
             "database": db_status["status"] == "ok",
-            "rustfs": rustfs_status["status"] == "ok"
+            "rustfs": rustfs_status["status"] == "ok",
+            "api": api_ready
         },
-        "message": "API 服务已启动" if all_ok else "API 服务已启动，但部分功能不可用"
+        "background_init": background_completed,
+        "message": message
     }
     
+    # 如果正在启动中，返回 503 让前端继续等待
+    status_code = 200 if overall_status == "ready" else 503
+    
     return JSONResponse(
-        status_code=200,
+        status_code=status_code,
         content=response_data
     )

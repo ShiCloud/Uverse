@@ -2,6 +2,7 @@
 RustFS 配置文件
 """
 import os
+import platform
 from pathlib import Path
 
 # 项目根目录
@@ -15,10 +16,14 @@ else:
     # 相对路径，基于 backend 目录
     STORE_DIR = PROJECT_ROOT / store_dir_env
 
+# 根据平台确定可执行文件名
+_is_windows = platform.system() == "Windows"
+RUSTFS_BINARY_NAME = "rustfs.exe" if _is_windows else "rustfs"
+
 # RustFS 配置
 RUSTFS_CONFIG = {
     # 执行文件路径
-    "binary_path": str(STORE_DIR / "rustfs"),
+    "binary_path": str(STORE_DIR / RUSTFS_BINARY_NAME),
     
     # 数据存储目录
     "data_dir": str(STORE_DIR / "data"),

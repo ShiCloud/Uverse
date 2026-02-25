@@ -21,7 +21,7 @@ def setup_venv(backend_dir: Path):
     venv_dir = backend_dir / ".venv"
     
     if not venv_dir.exists():
-        print("🔄 创建虚拟环境...")
+        print("[RESTART] 创建虚拟环境...")
         subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
     
     # 获取虚拟环境的 Python 路径
@@ -38,10 +38,10 @@ def install_dependencies(python_path: Path, backend_dir: Path):
     requirements = backend_dir / "requirements.txt"
     
     if not requirements.exists():
-        print("⚠️ 未找到 requirements.txt")
+        print("[WARN] 未找到 requirements.txt")
         return
     
-    print("🔄 安装依赖...")
+    print("[RESTART] 安装依赖...")
     subprocess.run(
         [str(python_path), "-m", "pip", "install", "-r", str(requirements)],
         check=True
@@ -60,20 +60,20 @@ def main():
         from dotenv import load_dotenv
         env_path = backend_dir / ".env"
         if env_path.exists():
-            load_dotenv(env_path)
-            print(f"✅ 已加载环境变量: {env_path}")
+            load_dotenv(env_path, override=True)
+            print(f"[OK] 已加载环境变量: {env_path}")
     except ImportError:
         pass  # dotenv 未安装时跳过
     
     # 启动前执行清理
-    print("🧹 启动前清理环境...")
+    print("[CLEAN] 启动前清理环境...")
     cleanup_script = backend_dir / "cleanup.py"
     if cleanup_script.exists():
         try:
             subprocess.run([sys.executable, str(cleanup_script)], check=False, timeout=30)
             print()
         except Exception as e:
-            print(f"⚠️ 清理脚本执行失败: {e}\n")
+            print(f"[WARN] 清理脚本执行失败: {e}\n")
     
     print("=" * 50)
     print("知识库后端启动工具")
@@ -81,10 +81,10 @@ def main():
     
     # 检查虚拟环境
     if check_venv():
-        print("✅ 已在虚拟环境中")
+        print("[OK] 已在虚拟环境中")
         python_path = Path(sys.executable)
     else:
-        print("🔄 使用虚拟环境")
+        print("[RESTART] 使用虚拟环境")
         python_path = setup_venv(backend_dir)
         install_dependencies(python_path, backend_dir)
     
@@ -94,9 +94,10 @@ def main():
     if "USE_EMBEDDED_PG" not in env:
         env["USE_EMBEDDED_PG"] = "true"
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     
     # 启动服务
-    print("\n🚀 启动后端服务...\n")
+    print("\n[START] 启动后端服务...\n")
     main_py = backend_dir / "main.py"
     
     # 存储进程对象
@@ -106,19 +107,19 @@ def main():
         """清理函数，确保子进程被终止"""
         nonlocal process
         if process and process.poll() is None:
-            print("\n🛑 正在终止服务进程...")
+            print("\n[STOP] 正在终止服务进程...")
             process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                print("⚠️ 进程未响应，强制终止...")
+                print("[WARN] 进程未响应，强制终止...")
                 process.kill()
                 process.wait()
-            print("✅ 服务进程已终止")
+            print("[OK] 服务进程已终止")
     
     def signal_handler(sig, frame):
         """信号处理函数"""
-        print(f"\n🛑 接收到信号 {sig}")
+        print(f"\n[STOP] 接收到信号 {sig}")
         cleanup()
         sys.exit(0)
     
@@ -140,10 +141,10 @@ def main():
         process.wait()
         
     except KeyboardInterrupt:
-        print("\n👋 接收到键盘中断")
+        print("\n[BYE] 接收到键盘中断")
         cleanup()
     except Exception as e:
-        print(f"\n❌ 服务运行错误: {e}")
+        print(f"\n[ERROR] 服务运行错误: {e}")
         cleanup()
     finally:
         atexit.unregister(cleanup)

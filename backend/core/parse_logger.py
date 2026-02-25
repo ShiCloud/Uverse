@@ -19,7 +19,7 @@ class LogEntry:
 class ParseLogger:
     """解析日志管理器"""
     
-    def __init__(self, max_entries: int = 1000):
+    def __init__(self, max_entries: int = 10000):
         self.logs: Dict[str, List[LogEntry]] = {}  # task_id -> log entries
         self.max_entries = max_entries
         self.subscribers: Dict[str, List[Callable]] = {}  # task_id -> callback list
@@ -71,7 +71,10 @@ class ParseLogger:
                     else:
                         # 同步回调，直接调用
                         callback(entry)
-                except Exception:
+                except Exception as e:
+                    # 调试日志（如需要可取消注释）
+                    # import traceback
+                    # print(f"[ParseLogger] 回调异常: {e}\n{traceback.format_exc()}")
                     pass
     
     async def add_log(self, task_id: str, level: str, message: str):
@@ -89,12 +92,16 @@ class ParseLogger:
             if task_id not in self.subscribers:
                 self.subscribers[task_id] = []
             self.subscribers[task_id].append(callback)
+            # 调试日志
+            # print(f"[ParseLogger] 订阅任务 {task_id}，当前订阅者数: {len(self.subscribers[task_id])}")
     
     def unsubscribe(self, task_id: str, callback: Callable):
         """取消订阅"""
         with self._lock:
             if task_id in self.subscribers and callback in self.subscribers[task_id]:
                 self.subscribers[task_id].remove(callback)
+                # 调试日志
+                # print(f"[ParseLogger] 取消订阅任务 {task_id}，当前订阅者数: {len(self.subscribers[task_id])}")
     
     def clear_logs(self, task_id: str):
         """清除任务日志"""

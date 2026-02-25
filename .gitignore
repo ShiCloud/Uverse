@@ -22,6 +22,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.log
+support/
 
 # Node
 node_modules/
@@ -50,14 +52,6 @@ dist-backend/
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-
-
 # Database
 postgres/
 store/

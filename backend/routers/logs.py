@@ -143,13 +143,21 @@ async def logs_websocket(websocket: WebSocket):
     import asyncio
     log_manager.set_event_loop(asyncio.get_event_loop())
     
-    # 存储接收到的日志的队列
-    log_queue = asyncio.Queue()
+    # 存储接收到的日志的队列（限制大小防止内存泄漏）
+    log_queue = asyncio.Queue(maxsize=1000)
+    
+    # 获取当前事件循环（用于回调）
+    loop = asyncio.get_event_loop()
     
     def on_new_log(entry):
         """新日志回调"""
         try:
-            loop = asyncio.get_event_loop()
+            # 如果队列满，先移除旧条目再添加新条目
+            if log_queue.full():
+                try:
+                    log_queue.get_nowait()  # 丢弃最旧的日志
+                except asyncio.QueueEmpty:
+                    pass
             loop.call_soon_threadsafe(log_queue.put_nowait, entry)
         except Exception as e:
             logger.debug(f"[Logs WebSocket] 回调错误: {e}")

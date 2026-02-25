@@ -43,12 +43,12 @@ async def test_connection(
         await conn.close()
         
         if verbose:
-            print(f"✅ 数据库连接成功: {version[:50]}...")
+            print(f"[OK] 数据库连接成功: {version[:50]}...")
         return True, f"连接成功: {version[:50]}..."
     except Exception as e:
         error_msg = str(e)
         if verbose:
-            print(f"❌ 数据库连接失败: {error_msg}")
+            print(f"[ERROR] 数据库连接失败: {error_msg}")
         return False, f"连接失败: {error_msg}"
 
 
@@ -96,7 +96,7 @@ async def test_connection_with_retry(
         
         if attempt < max_retries:
             if verbose:
-                print(f"⏳ 连接尝试 {attempt}/{max_retries} 失败，{retry_delay}秒后重试...")
+                print(f"[WAIT] 连接尝试 {attempt}/{max_retries} 失败，{retry_delay}秒后重试...")
             await asyncio.sleep(retry_delay)
     
     return False, f"连接失败（已重试{max_retries}次）"

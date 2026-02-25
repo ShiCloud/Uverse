@@ -45,10 +45,10 @@ def get_temp_dir() -> Path:
 # 导入 PDF 解析服务
 try:
     from services.pdf_parser import get_pdf_parser
-    from core.parse_logger import get_parse_logger
+    from core.parse_file_logger import get_parse_file_logger
     MINERU_AVAILABLE = True
 except ImportError as e:
-    print(f"⚠️ PDF 解析服务不可用: {e}")
+    print(f"[WARN] PDF 解析服务不可用: {e}")
     MINERU_AVAILABLE = False
 
 # 导入 Word 解析服务
@@ -56,7 +56,7 @@ try:
     from services.word_parser import get_word_parser
     WORD_PARSER_AVAILABLE = True
 except ImportError as e:
-    print(f"⚠️ Word 解析服务不可用: {e}")
+    print(f"[WARN] Word 解析服务不可用: {e}")
     WORD_PARSER_AVAILABLE = False
 
 # 导入 TXT/CSV 解析服务
@@ -64,7 +64,7 @@ try:
     from services.text_parser import get_text_parser
     TEXT_PARSER_AVAILABLE = True
 except ImportError as e:
-    print(f"⚠️ 文本解析服务不可用: {e}")
+    print(f"[WARN] 文本解析服务不可用: {e}")
     TEXT_PARSER_AVAILABLE = False
 
 router = APIRouter()
@@ -335,9 +335,9 @@ async def _run_parse_task_with_cleanup(
         
         # 记录日志
         try:
-            logger = get_parse_logger()
-            logger.add_log_sync(task_id, "ERROR", f"解析任务异常: {error_msg}")
-            logger.add_log_sync(task_id, "ERROR", f"错误堆栈: {error_trace}")
+            logger = get_parse_file_logger()
+            logger.add_log(task_id, "ERROR", f"解析任务异常: {error_msg}")
+            logger.add_log(task_id, "ERROR", f"错误堆栈: {error_trace}")
         except:
             pass
         
@@ -437,7 +437,7 @@ async def start_parse(
             raise HTTPException(status_code=409, detail="解析任务正在进行中")
     
     # 清除之前的日志（如果是重新解析）
-    logger = get_parse_logger()
+    logger = get_parse_file_logger()
     logger.clear_logs(doc_id)
     
     # 清除之前的取消标志（如果存在）
@@ -455,7 +455,7 @@ async def start_parse(
     
     # 创建日志记录器
     logger.create_task_logger(task_id)
-    logger.add_log_sync(task_id, "INFO", f"开始解析任务: {actual_filename}")
+    logger.add_log(task_id, "INFO", f"开始解析任务: {actual_filename}")
     
     # 更新文件状态为处理中
     storage_record.status = FileStatus.PROCESSING
@@ -530,8 +530,8 @@ async def stop_parse(
     task.message = "用户已停止解析"
     
     # 记录日志
-    logger = get_parse_logger()
-    logger.add_log_sync(doc_id, "WARNING", "解析任务已被用户停止")
+    logger = get_parse_file_logger()
+    logger.add_log(doc_id, "WARNING", "解析任务已被用户停止")
     
     # 更新数据库状态
     try:
@@ -580,7 +580,7 @@ async def parse_pdf_task(
     
     MinerU 会自动检测 PDF 类型并选择最佳解析方式。"""
     temp_file = None
-    logger = get_parse_logger()
+    logger = get_parse_file_logger()
     
     # 设置日志记录器的事件循环（必须在开头设置，确保后续日志能正确推送）
     try:
@@ -595,14 +595,14 @@ async def parse_pdf_task(
     try:
         # 检查是否已取消
         if check_cancelled(task_id):
-            logger.add_log_sync(task_id, "WARNING", "任务在开始执行前被取消")
+            logger.add_log(task_id, "WARNING", "任务在开始执行前被取消")
             parse_tasks[task_id].status = "stopped"
             parse_tasks[task_id].message = "任务已取消"
             return
         
         parse_tasks[task_id].status = "parsing"
         parse_tasks[task_id].message = "正在从存储下载文件..."
-        logger.add_log_sync(task_id, "INFO", "正在从存储下载文件...")
+        logger.add_log(task_id, "INFO", "正在从存储下载文件...")
         
         # 获取存储服务
         storage = get_rustfs_storage()
@@ -616,7 +616,6 @@ async def parse_pdf_task(
         if not success:
             raise Exception("从存储下载文件失败")
         
-        logger.add_log_sync(task_id, "INFO", f"文件下载完成: {temp_file}")
         parse_tasks[task_id].message = "正在初始化解析器..."
         
         # 获取解析器
@@ -625,11 +624,10 @@ async def parse_pdf_task(
         # 获取总页数
         total_pages = parser.get_pdf_page_count(str(temp_file))
         parse_tasks[task_id].total_pages = total_pages
-        logger.add_log_sync(task_id, "INFO", f"PDF 总页数: {total_pages}")
         
         # 检查是否已取消
         if check_cancelled(task_id):
-            logger.add_log_sync(task_id, "WARNING", "任务在获取页数后被取消")
+            logger.add_log(task_id, "WARNING", "任务在获取页数后被取消")
             parse_tasks[task_id].status = "stopped"
             parse_tasks[task_id].message = "任务已取消"
             return
@@ -646,7 +644,7 @@ async def parse_pdf_task(
         
         # 定义日志回调 - 使用同步方法记录日志
         def log_callback(level: str, message: str):
-            logger.add_log_sync(task_id, level, message)
+            logger.add_log(task_id, level, message)
         
         # 定义取消检查回调
         def cancel_check():
@@ -657,7 +655,7 @@ async def parse_pdf_task(
         from workers.pool import parse_pdf_in_process
         from services.pdf_parser import get_mineru_config_path
         
-        logger.add_log_sync(task_id, "INFO", "开始 PDF 解析...")
+        logger.add_log(task_id, "INFO", "开始 PDF 解析...")
         parse_tasks[task_id].message = "正在解析 PDF..."
         
         print(f"[ParseTask] 调用 parse_pdf_in_process, task_id={task_id}")
@@ -670,7 +668,8 @@ async def parse_pdf_task(
                 output_dir=str(parser.output_dir),
                 config_path=get_mineru_config_path(),
                 device=os.environ.get("MINERU_DEVICE", "cpu"),
-                backend=os.environ.get("MINERU_BACKEND", "pipeline")
+                backend=os.environ.get("MINERU_BACKEND", "pipeline"),
+                filename=filename
             )
             print(f"[ParseTask] parse_pdf_in_process 返回, success={result.get('success')}, cancelled={result.get('cancelled')}")
         except Exception as e:
@@ -681,7 +680,7 @@ async def parse_pdf_task(
         
         # 检查是否被取消
         if result.get('cancelled'):
-            logger.add_log_sync(task_id, "WARNING", "解析任务被用户取消")
+            logger.add_log(task_id, "WARNING", "解析任务被用户取消")
             parse_tasks[task_id].status = "stopped"
             parse_tasks[task_id].message = "任务已取消"
             return
@@ -693,12 +692,12 @@ async def parse_pdf_task(
         
         # 检查是否已取消
         if check_cancelled(task_id):
-            logger.add_log_sync(task_id, "WARNING", "解析任务被取消")
+            logger.add_log(task_id, "WARNING", "解析任务被取消")
             parse_tasks[task_id].status = "stopped"
             parse_tasks[task_id].message = "任务已取消"
             return
         
-        logger.add_log_sync(task_id, "INFO", "PDF 解析完成，正在处理结果...")
+        logger.add_log(task_id, "INFO", "PDF 解析完成，正在处理结果...")
         
         # 上传解析结果到 RustFS
         parse_tasks[task_id].message = "正在保存解析结果..."
@@ -718,7 +717,7 @@ async def parse_pdf_task(
         
         if images_dir.exists():
             parse_tasks[task_id].message = "正在上传图片资源..."
-            logger.add_log_sync(task_id, "INFO", f"发现图片目录，开始上传图片...")
+            logger.add_log(task_id, "INFO", f"发现图片目录，开始上传图片...")
             for img_file in images_dir.rglob("*"):
                 if img_file.is_file():
                     rel_path = img_file.relative_to(images_dir)
@@ -747,11 +746,11 @@ async def parse_pdf_task(
                             # 同时存储文件名，用于模糊匹配
                             image_url_map[img_file.name] = s3_url
             
-            logger.add_log_sync(task_id, "INFO", f"图片上传完成，共 {len(image_url_map)} 张")
+            logger.add_log(task_id, "INFO", f"图片上传完成，共 {len(image_url_map)} 张")
         
         # 2. 处理 Markdown 文件，替换图片链接
         parse_tasks[task_id].message = "正在处理 Markdown 文件..."
-        logger.add_log_sync(task_id, "INFO", "正在处理 Markdown 文件...")
+        logger.add_log(task_id, "INFO", "正在处理 Markdown 文件...")
         markdown_path = Path(parse_result['markdown_file'])
         
         # 读取原始 Markdown 内容
@@ -831,7 +830,7 @@ async def parse_pdf_task(
             }
         )
         
-        logger.add_log_sync(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
+        logger.add_log(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
         
         # 创建 Markdown 文件的数据库记录
         from core.database import AsyncSessionLocal
@@ -877,7 +876,7 @@ async def parse_pdf_task(
         parse_tasks[task_id].message = f"解析完成，共 {parse_result['total_pages']} 页"
         parse_tasks[task_id].output_file = parse_result['markdown_file']
         
-        logger.add_log_sync(task_id, "INFO", f"解析任务完成！共 {parse_result['total_pages']} 页")
+        logger.add_log(task_id, "INFO", f"解析任务完成！共 {parse_result['total_pages']} 页")
         
     except Exception as e:
         import traceback
@@ -895,10 +894,12 @@ async def parse_pdf_task(
             print(f"[警告] 任务 {task_id} 不存在，无法更新状态")
         
         try:
-            logger.add_log_sync(task_id, "ERROR", f"解析失败: {error_msg}")
-            logger.add_log_sync(task_id, "ERROR", f"错误堆栈: {error_trace}")
-        except:
-            pass
+            logger.add_log(task_id, "ERROR", f"解析失败: {error_msg}")
+            logger.add_log(task_id, "ERROR", f"错误堆栈: {error_trace}")
+            # 立即刷新错误日志到文件
+            logger.flush_task_buffer(task_id)
+        except Exception as log_err:
+            print(f"[ParseTask] 记录错误日志失败: {log_err}")
         
         # 更新数据库状态
         try:
@@ -925,7 +926,7 @@ async def parse_pdf_task(
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
-                logger.add_log_sync(task_id, "INFO", "临时文件已清理")
+                logger.add_log(task_id, "INFO", "临时文件已清理")
             except:
                 pass
 
@@ -940,12 +941,12 @@ async def parse_word_task(
 ):
     """后台解析 Word 文档任务"""
     temp_file = None
-    logger = get_parse_logger()
+    logger = get_parse_file_logger()
     
     try:
         parse_tasks[task_id].status = "parsing"
         parse_tasks[task_id].message = "正在从存储下载文件..."
-        logger.add_log_sync(task_id, "INFO", "正在从存储下载文件...")
+        logger.add_log(task_id, "INFO", "正在从存储下载文件...")
         
         # 获取存储服务
         storage = get_rustfs_storage()
@@ -959,7 +960,6 @@ async def parse_word_task(
         if not success:
             raise Exception("从存储下载文件失败")
         
-        logger.add_log_sync(task_id, "INFO", f"文件下载完成: {temp_file}")
         parse_tasks[task_id].message = "正在初始化 Word 解析器..."
         
         # 获取 Word 解析器
@@ -976,7 +976,7 @@ async def parse_word_task(
         
         # 定义日志回调
         def log_callback(level: str, message: str):
-            logger.add_log_sync(task_id, level, message)
+            logger.add_log(task_id, level, message)
         
         # 执行解析
         loop = asyncio.get_event_loop()
@@ -985,7 +985,7 @@ async def parse_word_task(
             lambda: parser.parse_docx(str(temp_file), doc_id, progress_callback, log_callback)
         )
         
-        logger.add_log_sync(task_id, "INFO", "Word 文档解析完成，正在保存结果...")
+        logger.add_log(task_id, "INFO", "Word 文档解析完成，正在保存结果...")
         parse_tasks[task_id].message = "正在保存解析结果..."
         
         # 上传 Markdown 文件到 RustFS
@@ -1008,7 +1008,7 @@ async def parse_word_task(
             }
         )
         
-        logger.add_log_sync(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
+        logger.add_log(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
         
         # 创建 Markdown 文件的数据库记录
         from core.database import AsyncSessionLocal
@@ -1056,7 +1056,7 @@ async def parse_word_task(
         parse_tasks[task_id].message = f"解析完成，共 {parse_result['paragraph_count']} 个段落，{parse_result['table_count']} 个表格"
         parse_tasks[task_id].output_file = str(md_path)
         
-        logger.add_log_sync(task_id, "INFO", f"Word 文档解析完成！共 {parse_result['paragraph_count']} 个段落，{parse_result['table_count']} 个表格")
+        logger.add_log(task_id, "INFO", f"Word 文档解析完成！共 {parse_result['paragraph_count']} 个段落，{parse_result['table_count']} 个表格")
         
     except Exception as e:
         import traceback
@@ -1068,8 +1068,8 @@ async def parse_word_task(
         print(f"Word 解析错误: {e}")
         print(f"错误堆栈:\n{error_trace}")
         
-        logger.add_log_sync(task_id, "ERROR", f"解析失败: {error_msg}")
-        logger.add_log_sync(task_id, "ERROR", f"错误堆栈: {error_trace}")
+        logger.add_log(task_id, "ERROR", f"解析失败: {error_msg}")
+        logger.add_log(task_id, "ERROR", f"错误堆栈: {error_trace}")
         
         # 更新数据库状态
         try:
@@ -1096,7 +1096,7 @@ async def parse_word_task(
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
-                logger.add_log_sync(task_id, "INFO", "临时文件已清理")
+                logger.add_log(task_id, "INFO", "临时文件已清理")
             except:
                 pass
 
@@ -1111,12 +1111,12 @@ async def parse_text_task(
 ):
     """后台解析 TXT/CSV 文件任务"""
     temp_file = None
-    logger = get_parse_logger()
+    logger = get_parse_file_logger()
     
     try:
         parse_tasks[task_id].status = "parsing"
         parse_tasks[task_id].message = "正在从存储下载文件..."
-        logger.add_log_sync(task_id, "INFO", "正在从存储下载文件...")
+        logger.add_log(task_id, "INFO", "正在从存储下载文件...")
         
         # 获取存储服务
         storage = get_rustfs_storage()
@@ -1130,7 +1130,6 @@ async def parse_text_task(
         if not success:
             raise Exception("从存储下载文件失败")
         
-        logger.add_log_sync(task_id, "INFO", f"文件下载完成: {temp_file}")
         parse_tasks[task_id].message = "正在初始化文本解析器..."
         
         # 获取文本解析器
@@ -1150,7 +1149,7 @@ async def parse_text_task(
         
         # 定义日志回调
         def log_callback(level: str, message: str):
-            logger.add_log_sync(task_id, level, message)
+            logger.add_log(task_id, level, message)
         
         # 执行解析
         loop = asyncio.get_event_loop()
@@ -1170,7 +1169,7 @@ async def parse_text_task(
             file_type_label = "TXT"
             result_info = f"{parse_result['line_count']} 行"
         
-        logger.add_log_sync(task_id, "INFO", f"{file_type_label} 文件解析完成，正在保存结果...")
+        logger.add_log(task_id, "INFO", f"{file_type_label} 文件解析完成，正在保存结果...")
         parse_tasks[task_id].message = "正在保存解析结果..."
         
         # 上传 Markdown 文件到 RustFS
@@ -1192,7 +1191,7 @@ async def parse_text_task(
             }
         )
         
-        logger.add_log_sync(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
+        logger.add_log(task_id, "INFO", f"Markdown 文件上传完成: {md_filename}")
         
         # 创建 Markdown 文件的数据库记录
         from core.database import AsyncSessionLocal
@@ -1239,7 +1238,7 @@ async def parse_text_task(
         parse_tasks[task_id].message = f"解析完成，共 {result_info}"
         parse_tasks[task_id].output_file = str(md_path)
         
-        logger.add_log_sync(task_id, "INFO", f"{file_type_label} 文件解析完成！共 {result_info}")
+        logger.add_log(task_id, "INFO", f"{file_type_label} 文件解析完成！共 {result_info}")
         
     except Exception as e:
         import traceback
@@ -1251,8 +1250,8 @@ async def parse_text_task(
         print(f"文本解析错误: {e}")
         print(f"错误堆栈:\n{error_trace}")
         
-        logger.add_log_sync(task_id, "ERROR", f"解析失败: {error_msg}")
-        logger.add_log_sync(task_id, "ERROR", f"错误堆栈: {error_trace}")
+        logger.add_log(task_id, "ERROR", f"解析失败: {error_msg}")
+        logger.add_log(task_id, "ERROR", f"错误堆栈: {error_trace}")
         
         # 更新数据库状态
         try:
@@ -1279,7 +1278,7 @@ async def parse_text_task(
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
-                logger.add_log_sync(task_id, "INFO", "临时文件已清理")
+                logger.add_log(task_id, "INFO", "临时文件已清理")
             except:
                 pass
 
@@ -1294,17 +1293,33 @@ async def get_parse_status(task_id: str):
 
 
 @router.get("/parse/logs/{task_id}")
-async def get_parse_logs(task_id: str, limit: int = Query(100, ge=1, le=1000)):
-    """获取解析任务的日志"""
+async def get_parse_logs(
+    task_id: str, 
+    limit: int = Query(5000, ge=1, le=10000),
+    offset: int = Query(0, ge=0)
+):
+    """获取解析任务的日志 - 从文件读取
+    
+    Args:
+        task_id: 任务ID
+        limit: 返回的最大日志条数（默认5000，最大10000）
+        offset: 跳过前 offset 条日志（用于增量加载）
+    """
     if not MINERU_AVAILABLE:
         raise HTTPException(status_code=503, detail="PDF 解析服务不可用")
     
-    logger = get_parse_logger()
-    logs = logger.get_logs(task_id)
+    logger = get_parse_file_logger()
     
-    # 限制返回的日志数量
-    if len(logs) > limit:
-        logs = logs[-limit:]
+    # 获取日志统计
+    stats = logger.get_log_stats(task_id)
+    total_lines = stats.get("lines", 0)
+    
+    # 读取日志
+    logs = logger.get_logs(task_id, limit=limit + offset)
+    
+    # 应用 offset
+    if offset > 0:
+        logs = logs[offset:]
     
     return {
         "task_id": task_id,
@@ -1316,55 +1331,48 @@ async def get_parse_logs(task_id: str, limit: int = Query(100, ge=1, le=1000)):
             }
             for log in logs
         ],
-        "total": len(logs)
+        "total": total_lines,
+        "returned": len(logs),
+        "offset": offset,
+        "has_more": total_lines > (offset + len(logs))
     }
 
 
 @router.get("/parse/logs/{task_id}/stream")
 async def stream_parse_logs(task_id: str):
-    """SSE 流式获取解析日志"""
+    """
+    SSE 流式获取解析日志 - 已弃用，使用轮询替代
+    保留此 API 以兼容旧版前端，但内部改为简单轮询
+    """
     if not MINERU_AVAILABLE:
         raise HTTPException(status_code=503, detail="PDF 解析服务不可用")
     
-    logger = get_parse_logger()
+    logger = get_parse_file_logger()
     
     async def event_generator():
-        """生成 SSE 事件"""
-        # 使用线程安全的队列
-        queue = asyncio.Queue()
+        """生成 SSE 事件 - 简单轮询模式"""
+        last_count = 0
+        empty_count = 0
+        max_empty = 60  # 最多空轮询 60 次（约 1 分钟）后断开
         
-        # 定义同步回调函数（线程安全）
-        def on_log_sync(entry):
-            """同步回调，将日志放入队列"""
-            try:
-                # 获取当前运行的事件循环
-                loop = asyncio.get_running_loop()
-                # 使用 call_soon_threadsafe 将任务提交到事件循环
-                loop.call_soon_threadsafe(queue.put_nowait, entry)
-            except RuntimeError:
-                # 没有运行的事件循环，忽略
-                pass
-        
-        # 订阅日志（使用同步回调）
-        logger.subscribe(task_id, on_log_sync)
-        
-        try:
-            # 首先发送已有的日志
-            existing_logs = logger.get_logs(task_id)
-            for log in existing_logs[-50:]:  # 发送最近 50 条
-                yield f"data: {json.dumps({'timestamp': log.timestamp, 'level': log.level, 'message': log.message}, ensure_ascii=False)}\n\n"
+        while empty_count < max_empty:
+            logs = logger.get_logs(task_id, limit=1000)
             
-            # 然后等待新日志
-            while True:
-                try:
-                    # 使用较短的 timeout 以便更频繁地发送心跳保持连接
-                    entry = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"data: {json.dumps({'timestamp': entry.timestamp, 'level': entry.level, 'message': entry.message}, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    # 发送心跳保持连接
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-        finally:
-            logger.unsubscribe(task_id, on_log_sync)
+            if len(logs) > last_count:
+                # 有新日志，发送新增的
+                new_logs = logs[last_count:]
+                for log in new_logs:
+                    yield f"data: {json.dumps({'timestamp': log.timestamp, 'level': log.level, 'message': log.message}, ensure_ascii=False)}\n\n"
+                last_count = len(logs)
+                empty_count = 0
+            else:
+                empty_count += 1
+            
+            # 发送心跳
+            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+            
+            # 等待 1 秒
+            await asyncio.sleep(1.0)
     
     return StreamingResponse(
         event_generator(),
@@ -1373,9 +1381,6 @@ async def stream_parse_logs(task_id: str):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET",
-            "Access-Control-Allow-Headers": "Content-Type",
         }
     )
 
@@ -1803,7 +1808,7 @@ async def delete_file(
         
         # 清除日志
         if MINERU_AVAILABLE:
-            logger = get_parse_logger()
+            logger = get_parse_file_logger()
             logger.clear_logs(record.doc_id)
     
     # 删除数据库记录
@@ -1841,7 +1846,7 @@ async def delete_document(
     
     # 清除日志
     if MINERU_AVAILABLE:
-        logger = get_parse_logger()
+        logger = get_parse_file_logger()
         logger.clear_logs(doc_id)
     
     await db.commit()

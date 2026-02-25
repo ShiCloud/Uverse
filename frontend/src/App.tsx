@@ -3,7 +3,6 @@ import { HashRouter as Router, Routes, Route, useLocation, useNavigate, Navigate
 import { 
   FileText, 
   Settings as SettingsIcon, 
-  // Database,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -23,7 +22,6 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { id: 'documents', label: '文档管理', icon: FileText, path: '/documents' },
-  // { id: 'knowledge', label: '知识库', icon: Database, path: '/knowledge' },
 ]
 
 // 左侧边栏组件
@@ -31,12 +29,10 @@ function Sidebar() {
   const location = useLocation()
   const navigate = useNavigate()
   const isSettingsActive = location.pathname === '/settings'
-  // 从 package.json 获取版本号
   const appVersion = __APP_VERSION__
 
   return (
     <div className="w-16 h-full bg-slate-900 flex flex-col items-center py-4 select-none">
-      {/* 应用 Logo */}
       <div className="mb-3 flex flex-col items-center">
         <img 
           src={iconImage} 
@@ -46,7 +42,6 @@ function Sidebar() {
       </div>
       <Separator className="w-10 bg-slate-700 mb-4" />
 
-      {/* 主导航 */}
       <div className="flex-1 flex flex-col gap-2 w-full px-2">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path
@@ -72,7 +67,6 @@ function Sidebar() {
         })}
       </div>
 
-      {/* 底部设置 */}
       <div className="mt-auto w-full px-2 flex flex-col items-center gap-2">
         <Button
           variant="ghost"
@@ -98,24 +92,12 @@ function Sidebar() {
 function Layout({ defaultRoute = '/settings' }: { defaultRoute?: string }) {
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[#f5f5f5]">
-      {/* 左侧边栏 */}
       <Sidebar />
-
-      {/* 主内容区 */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* 页面内容 */}
         <main className="flex-1 overflow-hidden">
           <Routes>
-            {/* 默认重定向 */}
             <Route path="/" element={<Navigate to={defaultRoute} replace />} />
-            
-            {/* 文档管理页面 - S3 文件管理 */}
             <Route path="/documents" element={<Documents />} />
-            
-            {/* 知识库页面 - 暂时隐藏 */}
-            {/* <Route path="/knowledge" element={<KnowledgeBase />} /> */}
-            
-            {/* 设置页面 */}
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
@@ -124,133 +106,138 @@ function Layout({ defaultRoute = '/settings' }: { defaultRoute?: string }) {
   )
 }
 
-function App() {
-  // 服务启动检查状态
-  const [isReady, setIsReady] = useState(false)
-  // 最小加载时间状态（确保至少显示2秒 loading 页面）
-  const [minLoadTimePassed, setMinLoadTimePassed] = useState(false)
-  // 是否显示 Loading 特效页面
-  const [showLoading, setShowLoading] = useState(true)
-  // 路径检查状态 (null = 未检查, true = 有效, false = 无效)
-  const [pathsValid, setPathsValid] = useState<boolean | null>(null)
-  // 数据库状态 (null = 未检查, true = 可用, false = 不可用)
-  const [dbValid, setDbValid] = useState<boolean | null>(null)
-  // 数据库模式和信息
-  const [dbInfo, setDbInfo] = useState<{ mode?: 'embedded' | 'external'; error?: string }>({})
+// 数据库状态类型
+interface DbStatusResult {
+  available: boolean
+  mode?: 'embedded' | 'external'
+  error?: string
+}
 
-  // 加载动画默认开启（简化逻辑，移除配置项）
+interface BackendStatus {
+  running: boolean
+  pid?: number
+  pgConfigStatus?: 'ok' | 'not_found' | 'error'
+  pgConfigError?: string
+}
+
+function App() {
+  // 路径检查状态
+  const [pathsValid, setPathsValid] = useState<boolean | null>(null)
+  // 数据库状态
+  const [dbValid, setDbValid] = useState<boolean | null>(null)
+  // PostgreSQL 配置状态
+  const [pgConfigStatus, setPgConfigStatus] = useState<'ok' | 'not_found' | 'error' | null>(null)
+  // 服务是否就绪
+  const [servicesReady, setServicesReady] = useState(false)
+  // 最小加载时间是否已过
+  const [minLoadTimePassed, setMinLoadTimePassed] = useState(false)
+
+  // 最小加载时间计时器（1秒）
   useEffect(() => {
-    setShowLoading(true)
+    const timer = setTimeout(() => {
+      setMinLoadTimePassed(true)
+    }, 1000)
+    return () => clearTimeout(timer)
   }, [])
 
-  // 检查服务状态
+  // 检查服务状态 - 在Loading页面完成
   useEffect(() => {
     const checkServices = async () => {
-      // 延迟2秒后开始，每次间隔2秒，重试5次，与Electron主进程保持一致
+      // 首先检查 Electron 后端状态（包括 PostgreSQL 配置状态）
+      let electronBackendStatus: BackendStatus | null = null
+      try {
+        if (window.electronAPI?.getBackendStatus) {
+          electronBackendStatus = await window.electronAPI.getBackendStatus()
+          console.log('[App] Electron 后端状态:', electronBackendStatus)
+          
+          // 如果 PostgreSQL 配置有问题，记录下来并保存到 localStorage
+          if (electronBackendStatus.pgConfigStatus && electronBackendStatus.pgConfigStatus !== 'ok') {
+            setPgConfigStatus(electronBackendStatus.pgConfigStatus)
+            console.error('[App] PostgreSQL 配置问题:', electronBackendStatus.pgConfigError)
+            // 保存到 localStorage，Settings 页面可以读取显示
+            localStorage.setItem('pg_config_error', electronBackendStatus.pgConfigError || '')
+            localStorage.setItem('pg_config_status', electronBackendStatus.pgConfigStatus)
+          } else {
+            // 清除之前的错误
+            localStorage.removeItem('pg_config_error')
+            localStorage.removeItem('pg_config_status')
+          }
+        }
+      } catch (err) {
+        console.error('[App] 获取 Electron 后端状态失败:', err)
+      }
+
+      // 等待后端就绪
       const result = await waitForReady({
-        initialDelay: 2000,
-        retryDelay: 2000,
-        maxRetries: 5
+        initialDelay: 300,
+        retryDelay: 500,
+        maxRetries: 30
       })
 
-      if (result.ready) {
-        setIsReady(true)
-        
-        // 先获取当前配置
-        let configs: Record<string, string> = {}
-        try {
-          configs = await getConfigValues()
-        } catch (error) {
-          console.error('[App] 获取配置失败:', error)
-        }
-        
-        // 检查数据库状态
-        try {
-          const dbStatusResult = await getDbStatus()
-          setDbValid(dbStatusResult.available)
-          setDbInfo({ mode: dbStatusResult.mode, error: dbStatusResult.error })
-          
-          if (!dbStatusResult.available) {
-            console.warn('[App] 数据库不可用:', dbStatusResult.error)
-          }
-        } catch (error) {
-          console.error('[App] 数据库状态检查异常:', error)
-          setDbValid(false)
-        }
-        
-        // 服务就绪后检查关键路径配置（store 和 postgres 是必须的）
-        try {
-          // 使用配置中的路径值
-          const postgresDir = configs.POSTGRES_DIR || 'postgres'
-          const storeDir = configs.STORE_DIR || 'store'
-          const modelsDir = configs.MODELS_DIR || 'models'
-          
-          const pathCheckResult = await checkPaths({
-            POSTGRES_DIR: postgresDir,
-            STORE_DIR: storeDir,
-            MODELS_DIR: modelsDir
-          })
-          
-          // 检查关键路径（store、postgres 和 models）
-          const isValid = pathCheckResult.valid === true
-          setPathsValid(isValid)
-          
-          if (!isValid) {
-            console.warn('[App] 路径检查未通过，错误:', pathCheckResult.errors)
-          }
-        } catch (error) {
-          console.error('[App] 路径检查异常:', error)
-          // 检查失败时，默认跳转到设置页面
-          setPathsValid(false)
-        }
-      } else {
-        // 服务启动失败（超时或出错），允许进入应用但跳转到设置页面
+      if (!result.ready) {
         console.error('[App] 服务启动失败:', result.error)
-        setIsReady(true)
-        setMinLoadTimePassed(true)  // 跳过最小加载时间，让用户尽快进入设置页面
+        // 如果是因为 PostgreSQL 配置问题导致失败，特殊处理
+        if (electronBackendStatus?.pgConfigStatus === 'not_found') {
+          setPathsValid(false)
+          setDbValid(false)
+          setServicesReady(true)
+          return
+        }
         setPathsValid(false)
         setDbValid(false)
-        setDbInfo({ mode: 'embedded', error: '服务启动失败: ' + (result.error || '连接超时') })
+        setServicesReady(true)
+        return
       }
+
+      // 并行获取配置和数据库状态
+      const [configs, dbStatusResult] = await Promise.all([
+        getConfigValues().catch(err => {
+          console.error('[App] 获取配置失败:', err)
+          return {} as Record<string, string>
+        }),
+        getDbStatus().catch(err => {
+          console.error('[App] 数据库状态检查异常:', err)
+          return { available: false } as DbStatusResult
+        })
+      ])
+      
+      setDbValid(dbStatusResult.available)
+      
+      // 检查关键路径配置
+      try {
+        const configMap = configs as Record<string, string>
+        const postgresDir = configMap['POSTGRES_DIR'] || 'postgres'
+        const storeDir = configMap['STORE_DIR'] || 'store'
+        const modelsDir = configMap['MODELS_DIR'] || 'models'
+        
+        const pathCheckResult = await checkPaths({
+          POSTGRES_DIR: postgresDir,
+          STORE_DIR: storeDir,
+          MODELS_DIR: modelsDir
+        })
+        
+        setPathsValid(pathCheckResult.valid === true)
+      } catch (error) {
+        console.error('[App] 路径检查异常:', error)
+        setPathsValid(false)
+      }
+      
+      setServicesReady(true)
     }
 
     checkServices()
   }, [])
 
-  // 最小加载时间计时器（3秒）- 仅在显示 loading 页面时启用
-  useEffect(() => {
-    if (!showLoading) return
-    
-    const timer = setTimeout(() => {
-      setMinLoadTimePassed(true)
-    }, 3000)
-
-    return () => clearTimeout(timer)
-  }, [showLoading])
-
-  // 如果服务未就绪或最小加载时间未到，显示 Loading 页面
-  if (!isReady || !minLoadTimePassed) {
-    return <LoadingPage showLoading={showLoading} />
+  // 服务未就绪或最小加载时间未到，显示 Loading 页面
+  if (!servicesReady || !minLoadTimePassed) {
+    return <LoadingPage showLoading={true} />
   }
 
-  // 路径检查或数据库检查完成前继续显示 loading
-  if (pathsValid === null || dbValid === null) {
-    return <LoadingPage showLoading={showLoading} />
-  }
-
-  // 服务就绪且所有检查完成，根据检查结果决定默认页面
-  // 路径检查或数据库检查任一失败都跳转到设置页面
-  const allValid = pathsValid && dbValid
-  const defaultRoute = allValid ? '/documents' : '/settings'
-  
-  if (!allValid) {
-    if (!pathsValid) {
-      console.warn('[App] 路径配置检查未通过，跳转到设置页面')
-    }
-    if (!dbValid) {
-      console.warn(`[App] 数据库不可用 (${dbInfo.mode} 模式${dbInfo.error ? ': ' + dbInfo.error : ''})，跳转到设置页面`)
-    }
-  }
+  // 服务就绪且最小加载时间已过，显示主界面
+  const allValid = pathsValid === true && dbValid === true
+  const hasPgConfigIssue = pgConfigStatus === 'not_found' || pgConfigStatus === 'error'
+  // 如果有 PostgreSQL 配置问题，强制跳转到设置页面
+  const defaultRoute = (allValid && !hasPgConfigIssue) ? '/documents' : '/settings'
   
   return (
     <Router>

@@ -17,7 +17,12 @@ files.forEach(file => {
     const oldPath = path.join(distElectron, file);
     const newPath = path.join(distElectron, file.replace('.js', '.cjs'));
     
-    if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+    // 如果 .cjs 已存在，先删除它
+    if (fs.existsSync(newPath)) {
+      fs.unlinkSync(newPath);
+    }
+    
+    if (fs.existsSync(oldPath)) {
       fs.renameSync(oldPath, newPath);
       console.log(`Renamed: ${file} -> ${file.replace('.js', '.cjs')}`);
     }

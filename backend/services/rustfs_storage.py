@@ -72,7 +72,7 @@ class RustFSStorage:
         # 检查可执行文件是否存在
         binary_path = Path(RUSTFS_CONFIG["binary_path"])
         if not binary_path.exists():
-            print(f"⚠️ RustFS 可执行文件不存在: {binary_path}")
+            print(f"[WARN] RustFS 可执行文件不存在: {binary_path}")
             return False
         
         try:

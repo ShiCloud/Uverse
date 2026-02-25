@@ -22,7 +22,8 @@ import {
   Lock,
   Globe,
   Zap,
-  X
+  X,
+  Sparkles
 } from 'lucide-react'
 import { getConfigs, updateConfigs, getConfigCategories, getLogs, getLogLevels, checkPaths, shutdownApp, getDbStatus, testDbConnection } from '../utils/api'
 import { Button } from '@/components/ui/button'
@@ -107,6 +108,8 @@ function Settings() {
   const [hideDbError, setHideDbError] = useState(false)
   // 是否隐藏路径错误提示
   const [hidePathErrors, setHidePathErrors] = useState(false)
+  // PostgreSQL 配置错误（从 localStorage 读取）
+  const [pgConfigError, setPgConfigError] = useState<string | null>(null)
 
   // 密码/密钥类配置项
   const PASSWORD_KEYS = ['OPENAI_API_KEY', 'SECRET_KEY', 'API_KEY', 'TOKEN']
@@ -211,37 +214,55 @@ function Settings() {
   
 
 
+  // 主要配置加载 - 优先执行
   useEffect(() => {
     loadConfigs()
-    loadLogLevels()
-    // 加载初始日志
-    loadInitialLogs(selectedLevel)
     
-    // 检测是否在 Electron 打包环境（使用轮询）
-    const isElectronPackaged = (window as any).electronAPI?.isElectron
-    
-    if (isElectronPackaged) {
-      // 打包环境：使用 HTTP 轮询（WebSocket 在同步解析时可能无法工作）
-      console.log('[Settings] Using polling mode for logs')
-      const pollInterval = setInterval(() => {
-        loadInitialLogs(selectedLevel)
-      }, 3000) // 每 3 秒轮询一次
+    // 从 localStorage 读取 PostgreSQL 配置错误
+    const savedPgError = localStorage.getItem('pg_config_error')
+    if (savedPgError) {
+      setPgConfigError(savedPgError)
+      // 显示错误后清除，避免重复显示
+      localStorage.removeItem('pg_config_error')
+      localStorage.removeItem('pg_config_status')
+    }
+  }, [])
+
+  // 日志加载 - 延迟执行，不阻塞配置显示
+  useEffect(() => {
+    // 延迟 500ms 加载日志相关数据，确保配置先显示
+    const timer = setTimeout(() => {
+      loadLogLevels()
+      loadInitialLogs(selectedLevel)
       
-      return () => {
-        clearInterval(pollInterval)
-      }
-    } else {
-      // 开发环境：使用 WebSocket
-      console.log('[Settings] Using WebSocket mode for logs')
-      connectWebSocket()
+      // 检测是否在 Electron 打包环境（使用轮询）
+      const isElectronPackaged = (window as any).electronAPI?.isElectron
       
-      return () => {
-        // 清理 WebSocket
-        if (wsRef.current) {
-          wsRef.current.close()
+      if (isElectronPackaged) {
+        // 打包环境：使用 HTTP 轮询
+        console.log('[Settings] Using polling mode for logs')
+        const pollInterval = setInterval(() => {
+          loadInitialLogs(selectedLevel)
+        }, 3000)
+        
+        // 清理函数
+        return () => {
+          clearInterval(pollInterval)
+        }
+      } else {
+        // 开发环境：使用 WebSocket
+        console.log('[Settings] Using WebSocket mode for logs')
+        connectWebSocket()
+        
+        return () => {
+          if (wsRef.current) {
+            wsRef.current.close()
+          }
         }
       }
-    }
+    }, 500)
+    
+    return () => clearTimeout(timer)
   }, [])
 
   // WebSocket 连接 - 使用全局变量确保只有一个实例
@@ -412,7 +433,7 @@ function Settings() {
     document.addEventListener('mouseup', handleMouseUp)
   }
 
-  const loadConfigs = async () => {
+  const loadConfigs = async (retryCount = 0) => {
     setConfigLoading(true)
     setSaveError(null)
     setHideDbError(false)
@@ -450,6 +471,21 @@ function Settings() {
       })
     } catch (error: any) {
       console.error('加载配置失败:', error)
+      
+      // 检查是否是连接错误（后端未就绪）
+      const isConnectionError = error.code === 'ECONNREFUSED' || 
+                                error.message?.includes('Network Error') ||
+                                error.message?.includes('connection refused')
+      
+      if (isConnectionError && retryCount < 10) {
+        // 后端未就绪，显示友好提示并自动重试
+        setSaveError('服务正在启动中，请稍候...')
+        setTimeout(() => {
+          loadConfigs(retryCount + 1)
+        }, 2000) // 2秒后重试
+        return
+      }
+      
       setSaveError('加载配置失败: ' + (error.message || '请检查后端服务是否正常运行'))
       setConfigLoading(false)
     }
@@ -505,6 +541,9 @@ function Settings() {
     const isEmbedded = useEmbedded.toLowerCase() === 'true'
     
     // ========== 目录配置校验 ==========
+    // 收集需要校验的路径
+    const pathsToCheck: Record<string, string> = {}
+    
     // 校验 POSTGRES_DIR（嵌入式模式必填）
     if (isEmbedded) {
       const pgDir = editedValues['POSTGRES_DIR']?.trim()
@@ -512,16 +551,7 @@ function Settings() {
         validationErrors.push('嵌入式模式必须配置 PostgreSQL 目录')
         newPathErrors['POSTGRES_DIR'] = 'PostgreSQL 目录未配置'
       } else {
-        try {
-          const checkResult = await checkPaths({ POSTGRES_DIR: pgDir })
-          if (!checkResult.valid) {
-            Object.assign(newPathErrors, checkResult.errors)
-            validationErrors.push('PostgreSQL 目录检查失败')
-          }
-        } catch (error: any) {
-          newPathErrors['POSTGRES_DIR'] = '目录校验出错'
-          validationErrors.push('PostgreSQL 目录校验出错')
-        }
+        pathsToCheck['POSTGRES_DIR'] = pgDir
       }
     }
     
@@ -531,33 +561,38 @@ function Settings() {
       validationErrors.push('必须配置 RustFS 目录')
       newPathErrors['STORE_DIR'] = 'RustFS 目录未配置'
     } else {
-      try {
-        const checkResult = await checkPaths({ STORE_DIR: storeDir })
-        if (!checkResult.valid) {
-          Object.assign(newPathErrors, checkResult.errors)
-          validationErrors.push('RustFS 目录检查失败')
-        }
-      } catch (error: any) {
-        newPathErrors['STORE_DIR'] = '目录校验出错'
-        validationErrors.push('RustFS 目录校验出错')
-      }
+      pathsToCheck['STORE_DIR'] = storeDir
     }
     
     // 校验 MODELS_DIR（必填）
     const modelsDir = editedValues['MODELS_DIR']?.trim()
     if (!modelsDir) {
       validationErrors.push('必须配置模型目录')
-      newPathErrors['MODELS_DIR'] = '模型目录未配置'
+      newPathErrors['MODELS_DIR'] = 'AI 模型目录未配置'
     } else {
+      pathsToCheck['MODELS_DIR'] = modelsDir
+    }
+    
+    // 校验 MINERU_OUTPUT_DIR（输出目录，必填）
+    const outputDir = editedValues['MINERU_OUTPUT_DIR']?.trim()
+    if (!outputDir) {
+      validationErrors.push('必须配置输出目录')
+      newPathErrors['MINERU_OUTPUT_DIR'] = '输出目录未配置'
+    }
+    
+    // 一次性检查所有路径
+    if (Object.keys(pathsToCheck).length > 0) {
       try {
-        const checkResult = await checkPaths({ MODELS_DIR: modelsDir })
+        const checkResult = await checkPaths(pathsToCheck)
         if (!checkResult.valid) {
           Object.assign(newPathErrors, checkResult.errors)
-          validationErrors.push('模型目录检查失败')
+          if (checkResult.errors['POSTGRES_DIR']) validationErrors.push('PostgreSQL 目录检查失败')
+          if (checkResult.errors['STORE_DIR']) validationErrors.push('RustFS 目录检查失败')
+          if (checkResult.errors['MODELS_DIR']) validationErrors.push('AI 模型目录检查失败')
         }
       } catch (error: any) {
-        newPathErrors['MODELS_DIR'] = '目录校验出错'
-        validationErrors.push('模型目录校验出错')
+        console.error('路径校验异常:', error)
+        validationErrors.push('路径校验异常: ' + (error.message || '请检查后端服务'))
       }
     }
     
@@ -654,6 +689,7 @@ function Settings() {
     switch (category.toLowerCase()) {
       case 'database': return <Database className="w-5 h-5 text-blue-500" />
       case 'server': return <Cpu className="w-5 h-5 text-green-500" />
+      case 'openai': return <Sparkles className="w-5 h-5 text-amber-500" />
       case 'mineru': return <Settings2 className="w-5 h-5 text-purple-500" />
       default: return <Settings2 className="w-5 h-5 text-gray-500" />
     }
@@ -1102,7 +1138,7 @@ function Settings() {
             </div>
             <div className="flex items-center gap-2">
               <Button
-                onClick={loadConfigs}
+                onClick={() => loadConfigs()}
                 variant="outline"
                 size="sm"
                 disabled={configLoading}
@@ -1150,13 +1186,21 @@ function Settings() {
             </Alert>
           )}
           
-          {/* 路径配置错误提示 */}
-          {Object.keys(pathErrors).length > 0 && !hidePathErrors && (
+          {/* 路径配置错误提示 - 包含 PostgreSQL 配置错误 */}
+          {(Object.keys(pathErrors).length > 0 || pgConfigError) && !hidePathErrors && (
             <Alert variant="destructive" className="border-red-400 bg-red-50 relative pr-10">
               <FolderOpen className="h-4 w-4 flex-shrink-0" />
               <AlertDescription className="flex flex-col gap-1">
                 <span className="font-semibold">路径配置检查失败</span>
                 <div className="text-sm opacity-90 mt-1 space-y-1">
+                  {/* PostgreSQL 配置错误（从 localStorage 读取） */}
+                  {pgConfigError && (
+                    <div className="flex items-start gap-2">
+                      <Database className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                      <span>{pgConfigError}</span>
+                    </div>
+                  )}
+                  {/* 其他路径错误 */}
                   {Object.entries(pathErrors).map(([key, error]) => (
                     <div key={key}>• {error}</div>
                   ))}
@@ -1164,7 +1208,7 @@ function Settings() {
                 <span className="text-sm mt-1">请检查上方的目录配置是否正确。</span>
               </AlertDescription>
               <button
-                onClick={() => setHidePathErrors(true)}
+                onClick={() => { setHidePathErrors(true); setPgConfigError(null); }}
                 className="absolute top-2 right-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-100 rounded-md transition-colors"
                 title="关闭提示"
               >
@@ -1177,18 +1221,41 @@ function Settings() {
           {dbStatus && !dbStatus.available && !hideDbError && (
             <Alert variant="destructive" className="border-red-400 bg-red-50 relative pr-10">
               <Database className="h-4 w-4" />
-              <AlertDescription className="flex flex-col gap-1">
+              <AlertDescription className="flex flex-col gap-2">
                 <span className="font-semibold">
                   {dbStatus.mode === 'external' ? '外部数据库连接失败' : '嵌入式数据库启动失败'}
                 </span>
                 {dbStatus.error && (
                   <span className="text-sm opacity-90">{dbStatus.error}</span>
                 )}
-                <span className="text-sm mt-1">
-                  {dbStatus.mode === 'external' 
-                    ? '请检查下方的数据库主机、端口、用户名和密码配置是否正确。'
-                    : '请检查 PostgreSQL 目录配置是否正确。'}
-                </span>
+                <div className="text-sm mt-1 space-y-1">
+                  {dbStatus.mode === 'external' ? (
+                    <span>请检查下方的数据库主机、端口、用户名和密码配置是否正确。</span>
+                  ) : (
+                    <>
+                      <p>请检查以下可能的原因：</p>
+                      <ul className="list-disc list-inside space-y-1 ml-2">
+                        <li>PostgreSQL 目录配置是否正确（应包含 bin、data 目录）</li>
+                        <li>端口 {editedValues['DATABASE_PORT'] || '15432'} 是否被其他程序占用</li>
+                        <li>Windows 防火墙是否阻止了本地连接</li>
+                        <li>数据目录是否损坏（可尝试删除 postgres/data 目录后重启）</li>
+                        <li>是否以管理员身份运行程序</li>
+                        <li>是否安装了 VC++ Redistributable（Visual C++ 运行库）</li>
+                      </ul>
+                      
+                      <div className="mt-3 p-2 bg-amber-100 rounded text-xs">
+                        <p className="font-semibold text-amber-800">快速修复步骤：</p>
+                        <ol className="list-decimal list-inside space-y-0.5 text-amber-800">
+                          <li>关闭本应用程序</li>
+                          <li>打开文件管理器，进入 PostgreSQL 目录</li>
+                          <li>删除或重命名 <code>data</code> 文件夹（如 data_backup）</li>
+                          <li>重新启动本应用程序</li>
+                        </ol>
+                        <p className="mt-1 text-amber-700">程序会自动重新初始化数据库</p>
+                      </div>
+                    </>
+                  )}
+                </div>
               </AlertDescription>
               <button
                 onClick={() => setHideDbError(true)}

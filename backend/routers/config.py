@@ -83,13 +83,18 @@ class ConfigResponse(BaseModel):
     configs: Optional[List[ConfigItem]] = None
 
 
-# 配置项分类和描述 - 只保留数据库、服务、路径、MinerU四类配置
+# 配置项分类和描述 - 完整配置项白名单
+# 注意：不在此列表中的配置项仍会保留在 .env 文件中，但不会显示在界面上
 CONFIG_METADATA: Dict[str, Dict[str, Any]] = {
-    # 应用版本配置
-    "APP_VERSION": {"category": "server", "description": "应用版本号"},
+    # 应用版本配置（隐藏，不在界面显示）
+    # "APP_VERSION": {"category": "server", "description": "应用版本号"},
     
     # 服务端口配置
     "PORT": {"category": "server", "description": "后端服务端口"},
+    "HOST": {"category": "server", "description": "后端服务地址"},
+    
+    # 以下配置项不在界面显示，但保留在 .env 文件中：
+    # DEBUG, SHOW_LOADING, LOG_LEVEL, APP_VERSION, TEMP_DIR
     
     # 服务路径配置
     "POSTGRES_DIR": {"category": "server", "description": "PostgreSQL 目录 (需包含 bin/psql)"},
@@ -105,12 +110,18 @@ CONFIG_METADATA: Dict[str, Dict[str, Any]] = {
     "DATABASE_PASSWORD": {"category": "database", "description": "数据库密码"},
     "DATABASE_NAME": {"category": "database", "description": "数据库名称"},
     
+    # OpenAI API 配置
+    "OPENAI_API_KEY": {"category": "openai", "description": "OpenAI API 密钥"},
+    "OPENAI_BASE_URL": {"category": "openai", "description": "OpenAI API 基础地址"},
+    "OPENAI_MODEL": {"category": "openai", "description": "OpenAI 模型名称"},
+    
     # PDF解析配置
     "MINERU_BACKEND": {"category": "mineru", "description": "PDF解析后端"},
     "MINERU_DEVICE": {"category": "mineru", "description": "设备模式"},
     "MINERU_VRAM": {"category": "mineru", "description": "GPU显存限制 (MB)"},
     "MINERU_VIRTUAL_VRAM_SIZE": {"category": "mineru", "description": "虚拟显存大小 (GB)"},
     "MINERU_OUTPUT_DIR": {"category": "mineru", "description": "PDF解析输出目录"},
+    
 }
 
 
@@ -283,10 +294,11 @@ async def update_configs(request: ConfigUpdateRequest):
 
 @router.get("/config/categories")
 async def get_config_categories():
-    """获取配置分类列表 - 返回数据库、服务、MinerU三类"""
+    """获取配置分类列表"""
     categories = {
         "server": "服务配置",
         "database": "数据库配置",
+        "openai": "OpenAI 配置",
         "mineru": "PDF解析配置",
     }
     return {"categories": categories}
@@ -307,6 +319,10 @@ class PathCheckResponse(BaseModel):
 @router.post("/config/check-paths", response_model=PathCheckResponse)
 async def check_paths(request: PathCheckRequest):
     """检查路径是否存在，并验证关键文件/目录"""
+    import time
+    start_time = time.time()
+    print(f"[Path Check API] 收到请求: {request.paths.keys()}")
+    
     results = {}
     errors = {}
     all_valid = True
@@ -316,9 +332,10 @@ async def check_paths(request: PathCheckRequest):
     is_embedded = DatabaseConfig.is_embedded_mode()
     
     # 定义各路径需要检查的具体内容
+    # 注意: check_executable 函数会自动处理 Windows 的 .exe 后缀
     CHECK_TARGETS = {
-        'POSTGRES_DIR': ('bin/psql', 'PostgreSQL 客户端 (bin/psql)'),
-        'STORE_DIR': ('rustfs', 'RustFS 可执行文件 (rustfs)'),
+        'POSTGRES_DIR': ('bin/psql', 'PostgreSQL 客户端'),
+        'STORE_DIR': ('rustfs', 'RustFS 可执行文件'),
         'MODELS_DIR': (None, 'OpenDataLab'),  # (子目录名, 描述)
         'TEMP_DIR': None,
     }
@@ -330,6 +347,8 @@ async def check_paths(request: PathCheckRequest):
         
         # 解析路径
         base_path = resolve_path(path_str, backend_dir)
+        print(f"[Path Check] {key}: 原始路径='{path_str}', 解析后='{base_path}'")
+        
         if not base_path:
             results[key] = False
             all_valid = False
@@ -342,25 +361,39 @@ async def check_paths(request: PathCheckRequest):
             # 只需要检查目录本身
             exists = base_path.exists()
             results[key] = exists
+            print(f"[Path Check] {key}: 目录检查结果={exists}")
             if not exists:
                 all_valid = False
                 errors[key] = f"目录不存在: {base_path}"
         elif key == 'POSTGRES_DIR' or key == 'STORE_DIR':
             # 检查可执行文件
             exe_name = target[0]
-            exists = check_executable(base_path, exe_name, is_windows)
+            exe_path = base_path / exe_name
+            if is_windows:
+                exe_path = exe_path.with_suffix('.exe')
+            
+            exists = exe_path.exists()
             results[key] = exists
+            print(f"[Path Check] {key}: 检查 '{exe_path}', 结果={exists}")
+            
             if not exists:
-                errors[key] = f"未找到 {target[1]}: {base_path / exe_name}"
+                # 显示正确的可执行文件名（包含 .exe 后缀）
+                display_exe_name = f"{exe_name}.exe" if is_windows else exe_name
+                errors[key] = f"未找到 {target[1]}: {base_path / display_exe_name}"
                 all_valid = False
         elif key == 'MODELS_DIR':
             # 检查子目录
             subdir = target[1]
-            exists = check_subdir(base_path, subdir)
+            subdir_path = base_path / subdir
+            exists = subdir_path.exists() and subdir_path.is_dir()
             results[key] = exists
+            print(f"[Path Check] {key}: 检查 '{subdir_path}', 结果={exists}")
             if not exists:
                 errors[key] = f"未找到 {target[1]}: {base_path / subdir}"
                 all_valid = False
+    
+    elapsed = time.time() - start_time
+    print(f"[Path Check API] 完成，耗时: {elapsed:.3f}s, 结果: {results}")
     
     return PathCheckResponse(
         valid=all_valid,
@@ -378,38 +411,48 @@ class DBStatusResponse(BaseModel):
 
 @router.get("/config/db-status", response_model=DBStatusResponse)
 async def check_db_status():
-    """检查数据库连接状态"""
+    """检查数据库连接状态 - 直接测试连接，不依赖全局变量"""
     use_embedded_pg = os.getenv("USE_EMBEDDED_PG", "true").lower() == "true"
     
-    # 导入 main 模块获取全局状态
-    import sys
-    main_module = sys.modules.get('__main__')
+    print(f"[DB Status API] use_embedded_pg={use_embedded_pg}")
     
-    print(f"[DB Status API] use_embedded_pg={use_embedded_pg}, main_module={main_module}")
-    
-    if use_embedded_pg:
-        # 嵌入式模式：检查 POSTGRES_AVAILABLE 标志
-        postgres_available = getattr(main_module, '_postgres_available', False)
-        print(f"[DB Status API] 嵌入式模式: _postgres_available={postgres_available}")
-        return DBStatusResponse(
-            available=postgres_available,
-            mode='embedded',
-            error=None if postgres_available else '嵌入式 PostgreSQL 未启动'
-        )
-    else:
-        # 外部模式：检查 POSTGRES_AVAILABLE 标志
-        postgres_available = getattr(main_module, '_postgres_available', False)
-        print(f"[DB Status API] 外部模式: _postgres_available={postgres_available}")
-        if postgres_available:
+    # 直接测试数据库连接（与 /ready 接口一致）
+    try:
+        from core.database import get_session_local
+        from sqlalchemy import text
+        
+        # 获取会话工厂（自动初始化引擎）
+        AsyncSessionLocal = get_session_local()
+        
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text("SELECT 1"))
+            value = result.scalar()
+            
+            if value == 1:
+                print(f"[DB Status API] 数据库连接正常")
+                return DBStatusResponse(
+                    available=True,
+                    mode='embedded' if use_embedded_pg else 'external',
+                    error=None
+                )
+            else:
+                print(f"[DB Status API] 数据库查询异常")
+                return DBStatusResponse(
+                    available=False,
+                    mode='embedded' if use_embedded_pg else 'external',
+                    error='数据库查询异常'
+                )
+    except Exception as e:
+        print(f"[DB Status API] 数据库连接失败: {e}")
+        error_msg = str(e)
+        if use_embedded_pg:
             return DBStatusResponse(
-                available=True,
-                mode='external',
-                error=None
+                available=False,
+                mode='embedded',
+                error='嵌入式 PostgreSQL 未启动或正在初始化'
             )
         else:
-            # 获取配置信息用于错误提示
             db_host = os.getenv("DATABASE_HOST", "").strip()
-            print(f"[DB Status API] 外部模式不可用: host={db_host}")
             if not db_host:
                 return DBStatusResponse(
                     available=False,

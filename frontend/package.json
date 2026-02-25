@@ -17,7 +17,7 @@
     ],
     "extraResources": [
       {
-        "from": "../backend/dist/uverse-backend",
+        "from": "../backend/dist/backend",
         "to": "backend",
         "filter": [
           "**/*",
@@ -26,15 +26,25 @@
         ]
       },
       {
+        "from": "../backend/.env",
+        "to": "backend/.env"
+      },
+      {
         "from": "build/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "src/assets/logo.png",
+        "to": "app/src/assets/logo.png"
       }
     ],
     "mac": {
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "category": "public.app-category.productivity",
@@ -42,21 +52,29 @@
     },
     "win": {
       "target": [
-        "portable"
+        {
+          "target": "dir",
+          "arch": ["x64"]
+        }
       ],
-      "publisherName": "Uverse",
       "icon": "build/icon.ico"
     }
   },
   "scripts": {
     "build": "tsc && vite build",
+    "build:watch": "tsc && vite build --watch",
     "build:electron": "tsc -p electron/tsconfig.json && npm run rename:electron",
+    "build:electron:watch": "npm run build:electron && tsc -p electron/tsconfig.json --watch",
     "rename:electron": "node scripts/rename-electron.js",
     "electron:dev": "npm run build && npm run build:electron && electron dist-electron/main.cjs",
     "electron:build": "npm run build && npm run build:electron && electron-builder",
     "electron:build:mac": "cd .. && ./scripts/build-and-install-mac.sh",
-    "electron:build:win": "npm run build && npm run build:electron && electron-builder --win",
-    "postinstall": "electron-builder install-app-deps"
+    "electron:build:win": "call ..\\scripts\\build-all-win.bat",
+    "electron:build:win:all": "call ..\\scripts\\build-all-win-full.bat",
+    "postinstall": "electron-builder install-app-deps",
+    "watch": "npm run build:watch",
+    "watch:all": "concurrently \"npm run build:watch\" \"npm run build:electron:watch\"",
+    "dev": "npm run build && npm run build:electron && electron dist-electron/main.cjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -82,6 +100,7 @@
     "@types/react-dom": "^18.2.17",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
+    "concurrently": "^9.2.1",
     "electron": "^28.3.3",
     "electron-builder": "^24.9.1",
     "postcss": "^8.4.32",

@@ -30,7 +30,11 @@ def get_temp_dir() -> Path:
 # 配置
 TARGET_PORTS = [8000, 9000, 15432]  # 需要检查的端口
 # 注意：postgres 进程只在嵌入式模式下清理，外部数据库模式下跳过
-TARGET_NAMES = ['rustfs', 'postgres']  # 需要检查的进程名
+# 根据平台设置目标进程名
+if sys.platform == "win32":
+    TARGET_NAMES = ['rustfs.exe', 'postgres.exe']  # Windows 可执行文件名
+else:
+    TARGET_NAMES = ['rustfs', 'postgres']  # Linux/macOS 可执行文件名
 MAX_WAIT_TIME = 5  # 等待进程终止的最大时间（秒）
 
 # 导入公共工具（使用局部导入避免循环依赖）
@@ -97,7 +101,9 @@ def is_our_process(pid):
             'uverse',
             'backend/main.py',
             'rustfs',
+            'rustfs.exe',
             'postgres',
+            'postgres.exe',
         ]
         
         for path in our_paths:
@@ -115,40 +121,68 @@ def kill_process_gracefully(pid, name=""):
     
     # 检查进程是否存在
     if not is_process_responsive(pid):
-        print(f"  ℹ️ 进程 PID {pid}{name_str} 已不存在")
+        print(f"  [INFO] 进程 PID {pid}{name_str} 已不存在")
         return True
     
     # 检查是否是我们的进程
     if not is_our_process(pid):
-        print(f"  ⚠️ 进程 PID {pid}{name_str} 不是我们的应用进程，跳过")
+        print(f"  [WARN] 进程 PID {pid}{name_str} 不是我们的应用进程，跳过")
         return False
     
-    print(f"  🛑 正在终止进程 PID {pid}{name_str}")
+    print(f"  [STOP] 正在终止进程 PID {pid}{name_str}")
     
+    # Windows 平台使用 taskkill
+    if sys.platform == "win32":
+        try:
+            # 先尝试优雅终止
+            subprocess.run(
+                ["taskkill", "/PID", str(pid)],
+                capture_output=True, timeout=MAX_WAIT_TIME
+            )
+            time.sleep(0.5)
+            if not is_process_responsive(pid):
+                print(f"  [OK] 进程 PID {pid} 已终止")
+                return True
+            
+            # 强制终止
+            print(f"  [WARN] 进程 PID {pid} 未响应，强制终止...")
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True, timeout=2
+            )
+            time.sleep(0.5)
+            if not is_process_responsive(pid):
+                print(f"  [OK] 进程 PID {pid} 已强制终止")
+                return True
+        except Exception as e:
+            print(f"  [ERROR] 终止失败: {e}")
+        return False
+    
+    # Unix 平台使用信号
     # 先尝试 SIGTERM (优雅终止)
     try:
         os.kill(pid, signal.SIGTERM)
     except Exception as e:
-        print(f"  ⚠️ 发送 SIGTERM 失败: {e}")
+        print(f"  [WARN] 发送 SIGTERM 失败: {e}")
     
     # 等待进程终止
     start_time = time.time()
     while time.time() - start_time < MAX_WAIT_TIME:
         if not is_process_responsive(pid):
-            print(f"  ✅ 进程 PID {pid} 已终止")
+            print(f"  [OK] 进程 PID {pid} 已终止")
             return True
         time.sleep(0.5)
     
     # 如果还在运行，强制终止
-    print(f"  ⚠️ 进程 PID {pid} 未响应，强制终止...")
+    print(f"  [WARN] 进程 PID {pid} 未响应，强制终止...")
     try:
         os.kill(pid, signal.SIGKILL)
         time.sleep(1)
         if not is_process_responsive(pid):
-            print(f"  ✅ 进程 PID {pid} 已强制终止")
+            print(f"  [OK] 进程 PID {pid} 已强制终止")
             return True
     except Exception as e:
-        print(f"  ❌ 强制终止失败: {e}")
+        print(f"  [ERROR] 强制终止失败: {e}")
     
     return False
 
@@ -157,7 +191,28 @@ def check_port_usage(port):
     """检查端口使用情况，返回使用该端口的进程 PID 列表"""
     pids = []
     
-    if sys.platform == "darwin" or sys.platform.startswith("linux"):
+    if sys.platform == "win32":
+        # Windows: 使用 netstat 查找占用端口的进程
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    # 查找包含 :port 的行，例如 "  TCP    127.0.0.1:8000    0.0.0.0:0    LISTENING    12345"
+                    if f":{port}" in line and "LISTENING" in line:
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            try:
+                                pid = int(parts[-1])
+                                pids.append(pid)
+                            except ValueError:
+                                pass
+        except Exception:
+            pass
+            
+    elif sys.platform == "darwin" or sys.platform.startswith("linux"):
         # 使用 lsof 查找占用端口的进程
         output = run_command(f"lsof -ti:{port}", timeout=3)
         if output:
@@ -172,7 +227,7 @@ def check_port_usage(port):
 
 def cleanup_ports():
     """清理占用目标端口的进程"""
-    print("🔍 检查端口占用情况...")
+    print("[SEARCH] 检查端口占用情况...")
     
     killed_count = 0
     skipped_count = 0
@@ -182,21 +237,21 @@ def cleanup_ports():
         # 外部数据库模式下，跳过 PostgreSQL 端口检查（5432/15432）
         # 注意：15432 是嵌入式 PostgreSQL 的默认端口，5432 是标准端口
         if external_db_mode and port == 15432:
-            print(f"  ℹ️  外部数据库模式，跳过端口 {port} 检查")
+            print(f"  [INFO]  外部数据库模式，跳过端口 {port} 检查")
             continue
         
         pids = check_port_usage(port)
         
         if not pids:
-            print(f"  ✅ 端口 {port} 未被占用")
+            print(f"  [OK] 端口 {port} 未被占用")
             continue
         
-        print(f"  📍 端口 {port} 被 {len(pids)} 个进程占用")
+        print(f"  [FOUND] 端口 {port} 被 {len(pids)} 个进程占用")
         
         for pid in pids:
             # 不杀死当前进程
             if pid == os.getpid():
-                print(f"  ℹ️ 跳过当前进程 PID {pid}")
+                print(f"  [INFO] 跳过当前进程 PID {pid}")
                 continue
             
             if kill_process_gracefully(pid, f"端口 {port}"):
@@ -207,9 +262,35 @@ def cleanup_ports():
     return killed_count, skipped_count
 
 
+def get_windows_pids_by_name(name):
+    """Windows 平台根据进程名获取 PID 列表"""
+    pids = []
+    try:
+        # 使用 tasklist 查找进程
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split('\n'):
+                line = line.strip()
+                if line and line.startswith('"'):
+                    # CSV 格式: "name","pid",...
+                    parts = line.split('","')
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1])
+                            pids.append(pid)
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+    return pids
+
+
 def cleanup_by_name():
     """根据进程名清理"""
-    print("🔍 检查目标进程...")
+    print("[SEARCH] 检查目标进程...")
     
     killed_count = 0
     skipped_count = 0
@@ -217,24 +298,45 @@ def cleanup_by_name():
     
     for name in TARGET_NAMES:
         # 外部数据库模式下，跳过 postgres 进程清理
-        if name == 'postgres' and external_db_mode:
-            print(f"  ℹ️  外部数据库模式，跳过 {name} 进程检查")
+        base_name = name.replace('.exe', '')
+        if base_name == 'postgres' and external_db_mode:
+            print(f"  [INFO]  外部数据库模式，跳过 {name} 进程检查")
             continue
         
-        if sys.platform == "darwin" or sys.platform.startswith("linux"):
-            # 使用 pgrep 查找进程
+        if sys.platform == "win32":
+            # Windows 平台
+            pids = get_windows_pids_by_name(name)
+            
+            if not pids:
+                print(f"  [OK] 未发现残留进程: {name}")
+                continue
+            
+            print(f"  [FOUND] 发现 {len(pids)} 个 {name} 进程")
+            
+            for pid in pids:
+                # 不杀死当前进程
+                if pid == os.getpid():
+                    continue
+                
+                if kill_process_gracefully(pid, name):
+                    killed_count += 1
+                else:
+                    skipped_count += 1
+                    
+        elif sys.platform == "darwin" or sys.platform.startswith("linux"):
+            # macOS / Linux 平台
             output = run_command(f"pgrep -f '{name}'", timeout=3)
             if not output:
-                print(f"  ✅ 未发现残留进程: {name}")
+                print(f"  [OK] 未发现残留进程: {name}")
                 continue
             
             pids = [int(p.strip()) for p in output.split('\n') if p.strip().isdigit()]
             
             if not pids:
-                print(f"  ✅ 未发现残留进程: {name}")
+                print(f"  [OK] 未发现残留进程: {name}")
                 continue
             
-            print(f"  📍 发现 {len(pids)} 个 {name} 进程")
+            print(f"  [FOUND] 发现 {len(pids)} 个 {name} 进程")
             
             for pid in pids:
                 # 不杀死当前进程
@@ -251,7 +353,7 @@ def cleanup_by_name():
 
 def cleanup_temp_files():
     """清理临时文件"""
-    print("🔍 清理临时文件...")
+    print("[SEARCH] 清理临时文件...")
     
     backend_dir = Path(__file__).parent
     cleaned = []
@@ -264,7 +366,7 @@ def cleanup_temp_files():
             shutil.rmtree(temp_dir)
             cleaned.append(str(temp_dir))
         except Exception as e:
-            print(f"  ⚠️ 清理 {temp_dir} 失败: {e}")
+            print(f"  [WARN] 清理 {temp_dir} 失败: {e}")
     
     # 清理 out 目录中的旧文件（保留最近1小时的）
     out_dir = backend_dir / "out"
@@ -285,18 +387,18 @@ def cleanup_temp_files():
                         item.unlink()
                     cleaned.append(str(item))
             except Exception as e:
-                print(f"  ⚠️ 清理 {item} 失败: {e}")
+                print(f"  [WARN] 清理 {item} 失败: {e}")
     
     if cleaned:
-        print(f"  ✅ 已清理 {len(cleaned)} 个临时文件/目录")
+        print(f"  [OK] 已清理 {len(cleaned)} 个临时文件/目录")
     else:
-        print(f"  ✅ 无需清理临时文件")
+        print(f"  [OK] 无需清理临时文件")
 
 
 def main():
     """主函数"""
     print("=" * 50)
-    print("🧹 智能清理残留进程和文件")
+    print("[CLEAN] 智能清理残留进程和文件")
     print("=" * 50)
     
     # 清理端口占用
@@ -318,11 +420,11 @@ def main():
     total_skipped = port_skipped + name_skipped
     
     if total_killed > 0:
-        print(f"✅ 已终止 {total_killed} 个进程")
+        print(f"[OK] 已终止 {total_killed} 个进程")
     if total_skipped > 0:
-        print(f"⚠️ 跳过 {total_skipped} 个进程（非本应用或无法终止）")
+        print(f"[WARN] 跳过 {total_skipped} 个进程（非本应用或无法终止）")
     if total_killed == 0 and total_skipped == 0:
-        print("✅ 环境已干净，无需清理")
+        print("[OK] 环境已干净，无需清理")
     
     print("=" * 50)
 

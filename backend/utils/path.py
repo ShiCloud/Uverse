@@ -20,12 +20,24 @@ def resolve_path(path_str: str, base_dir: Optional[Path] = None) -> Optional[Pat
     if not path_str or not path_str.strip():
         return None
     
-    path = Path(path_str.strip())
+    # 清理路径字符串（移除首尾空格和引号）
+    cleaned_path = path_str.strip().strip('"\'')
+    
+    # 处理 Windows 路径的反斜杠，统一转换为正斜杠以便跨平台处理
+    # 但保留原始格式用于显示
+    cleaned_path = cleaned_path.replace('\\', '/')
+    
+    path = Path(cleaned_path)
     
     if not path.is_absolute() and base_dir is not None:
         path = base_dir / path
     
-    return path.resolve()
+    try:
+        # 使用 resolve() 获取绝对路径，如果路径不存在也不会抛出异常
+        return path.resolve()
+    except Exception:
+        # 如果 resolve 失败，返回原始路径
+        return path
 
 
 def check_executable(base_path: Path, name: str, is_windows: Optional[bool] = None) -> bool:
