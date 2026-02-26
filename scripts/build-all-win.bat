@@ -53,8 +53,8 @@ if errorlevel 1 (
 )
 
 :: 验证构建结果
-if not exist "dist\backend\uverse-backend.exe" (
-    echo [ERROR] Backend executable not found: dist\backend\uverse-backend.exe
+if not exist "dist\uverse-backend\uverse-backend.exe" (
+    echo [ERROR] Backend executable not found: dist\uverse-backend\uverse-backend.exe
     pause
     exit /b 1
 )
@@ -117,8 +117,8 @@ echo   Build Complete!
 echo ========================================
 echo.
 echo Output files:
-echo   - Backend: %BACKEND_DIR%\dist\backend\
-echo   - Frontend: %FRONTEND_DIR%\release\Uverse-*-win.zip
+echo   - Backend: %BACKEND_DIR%\dist\uverse-backend\
+echo   - Frontend: %FRONTEND_DIR%\release\win-unpacked\
 echo.
 
 exit /b 0

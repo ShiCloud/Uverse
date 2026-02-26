@@ -48,6 +48,25 @@ def install_dependencies(python_path: Path, backend_dir: Path):
     )
 
 
+def get_env_file_path() -> Path:
+    """
+    获取 .env 文件路径 - 适配开发和打包环境
+    
+    Windows 打包模式: 直接使用 exe 所在目录的 .env
+    其他模式: 使用项目目录的 .env
+    """
+    backend_dir = Path(__file__).parent
+    
+    # 打包模式: 使用 exe 所在目录的 .env
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).parent
+        return exe_dir / ".env"
+    
+    # 开发环境: 使用项目目录的 .env
+    dev_path = backend_dir / ".env"
+    return dev_path
+
+
 def main():
     """主函数"""
     import signal
@@ -58,7 +77,7 @@ def main():
     # 加载 .env 文件
     try:
         from dotenv import load_dotenv
-        env_path = backend_dir / ".env"
+        env_path = get_env_file_path()
         if env_path.exists():
             load_dotenv(env_path, override=True)
             print(f"[OK] 已加载环境变量: {env_path}")

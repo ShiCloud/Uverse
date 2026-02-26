@@ -61,6 +61,8 @@ PyInstaller 构建:
 
 所有修复记录详见: [docs/CHANGELOG.md](./docs/CHANGELOG.md)
 
+> 注意：所有代码修改必须同步更新 CHANGELOG.md
+
 **最新修复 (2026-02-26)**:
 1. PDF Worker 参数传递修复
 2. Electron 路径验证与 mineru.json 更新修复

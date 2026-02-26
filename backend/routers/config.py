@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 # 导入公共工具模块
-from utils import DatabaseConfig, test_connection, resolve_path
+from utils import DatabaseConfig, test_connection, resolve_path_for_config
 from utils import check_executable, check_subdir
 from utils.path import get_user_data_dir
 
@@ -19,45 +19,20 @@ router = APIRouter()
 
 # 配置文件路径 - 支持开发和 PyInstaller 打包环境
 def get_env_file_path() -> Path:
-    """获取 .env 文件路径 - 适配开发和打包环境"""
+    """获取 .env 文件路径 - 适配开发和打包环境
+    
+    Windows 打包模式: 直接使用 exe 所在目录的 .env
+    其他模式: 使用项目目录的 .env
+    """
     import sys
     
-    # 用户可写目录
-    user_data_dir = get_user_data_dir()
-    user_env_path = user_data_dir / ".env"
-    
-    # PyInstaller 打包环境
+    # 打包环境: 使用 exe 所在目录的 .env
     if getattr(sys, 'frozen', False):
-        # 在 PyInstaller 中，__file__ 指向 _internal/ 目录
-        # 需要使用 sys.executable 来获取正确的目录
         exe_dir = Path(sys.executable).parent
-        bundled_path = exe_dir / ".env"
-        
-        # 如果用户目录没有 .env，从应用包复制一份
-        if not user_env_path.exists() and bundled_path.exists():
-            user_data_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(bundled_path, user_env_path)
-        
-        # 使用用户目录的配置文件（可写）
-        if user_env_path.exists():
-            return user_env_path
-        
-        # 如果复制失败，返回用户目录路径（即使不存在，让调用方处理）
-        return user_env_path
+        return exe_dir / ".env"
     
-    # 开发环境：使用当前文件所在目录的父目录（backend/）
+    # 开发环境: 使用项目目录的 .env
     dev_path = Path(__file__).parent.parent / ".env"
-    
-    # 优先使用项目目录的配置文件
-    if dev_path.exists():
-        return dev_path
-    
-    # 如果项目目录没有，使用用户目录（兼容旧版本）
-    if user_env_path.exists():
-        return user_env_path
-    
-    # 默认返回项目目录路径（即使不存在，让调用方处理）
     return dev_path
 
 ENV_FILE_PATH = get_env_file_path()
@@ -346,7 +321,7 @@ async def check_paths(request: PathCheckRequest):
             continue
         
         # 解析路径
-        base_path = resolve_path(path_str, backend_dir)
+        base_path = resolve_path_for_config(path_str, backend_dir)
         print(f"[Path Check] {key}: 原始路径='{path_str}', 解析后='{base_path}'")
         
         if not base_path:

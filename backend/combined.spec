@@ -361,7 +361,7 @@ exe_worker = EXE(
     entitlements_file=None,
 )
 
-# 合并收集到 backend 目录下（使用 'backend' 作为目录名）
+# 合并收集到 backend 目录下
 coll = COLLECT(
     exe_main,
     exe_worker,

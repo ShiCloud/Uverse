@@ -24,21 +24,15 @@ def _get_log_dir(log_dir_name: str = "logs") -> Path:
     """获取日志目录路径 - 与 FileLogManager 保持一致
     
     开发模式：使用项目目录的 backend/logs
-    打包模式：使用用户可写目录 (support/userData)
+    打包模式：使用exe所在目录下的logs文件夹
     """
     # 开发环境：使用项目目录
     if not getattr(sys, 'frozen', False):
         return Path(__file__).parent.parent / log_dir_name
     
-    # 打包环境：使用用户可写目录 (与 FileLogManager 一致)
-    if os.name == 'nt':  # Windows
-        base_dir = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
-    elif sys.platform == 'darwin':  # macOS
-        base_dir = Path.home() / 'Library' / 'Application Support'
-    else:  # Linux
-        base_dir = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
-    
-    return base_dir / 'Uverse' / log_dir_name
+    # 打包环境：使用exe所在目录下的logs文件夹
+    exe_dir = Path(sys.executable).parent
+    return exe_dir / log_dir_name
 
 
 class ParseFileLogger:

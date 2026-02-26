@@ -12,7 +12,7 @@ import {
   Terminal,
   CheckCircle2,
   FolderOpen,
-  Download,
+
   Folder,
   HardDrive,
   Box,
@@ -192,14 +192,6 @@ function Settings() {
     return nameMap[key] || key.replace(/_/g, ' ').toLowerCase()
   }
   
-  // 检查路径是否已配置（用于首次使用提示）
-  const hasUnconfiguredPaths = () => {
-    return PATH_KEYS.some(key => {
-      const value = editedValues[key]
-      return !value || value.trim() === ''
-    })
-  }
-
   // 保存日志级别到 localStorage
   const saveLogLevel = (level: string) => {
     if (typeof window !== 'undefined') {
@@ -484,19 +476,27 @@ function Settings() {
           if ((window as any).electronAPI?.getBackendStatus) {
             (window as any).electronAPI.getBackendStatus().then((status: any) => {
               setServicesStatus(status.servicesStartStatus || 'idle')
+              
+              // 只有服务启动成功后才调用后端API获取数据库状态
+              if (status.servicesStartStatus === 'started') {
+                getDbStatus().catch(() => null).then(dbStatusData => {
+                  if (dbStatusData) {
+                    setDbStatus(dbStatusData)
+                  }
+                })
+              }
             }).catch(() => {
               setServicesStatus('idle')
             })
           }
           
-          // 数据库状态在后台加载，不阻塞配置显示
-          getDbStatus().catch(() => null).then(dbStatusData => {
-            if (dbStatusData) {
-              setDbStatus(dbStatusData)
-            }
-          })
-          
           // IPC 读取成功，结束 loading
+          setConfigLoading(false)
+          return
+        } else {
+          // IPC 返回了但失败，不尝试后端API
+          console.error('[Settings] IPC 读取配置失败:', envConfig.message)
+          setSaveError('读取配置失败: ' + (envConfig.message || '.env 文件不存在'))
           setConfigLoading(false)
           return
         }
@@ -1151,76 +1151,6 @@ function Settings() {
             <div className="w-8 h-1 bg-gray-300 rounded-full" />
           </div>
         </div>
-
-        {/* 首次使用提示 */}
-        {!configLoading && hasUnconfiguredPaths() && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold text-amber-800 mb-1">
-                  首次使用，请配置必要组件路径
-                </h3>
-                <p className="text-xs text-amber-700 mb-3">
-                  以下组件需要单独下载，请在下方配置它们的安装路径：
-                </p>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-xs text-amber-800">
-                    <Database className="w-3.5 h-3.5" />
-                    <span className="font-medium">PostgreSQL</span>
-                    <span className="text-amber-600">- 数据库服务</span>
-                    <button 
-                      onClick={() => {
-                        if ((window as any).electronAPI?.openExternal) {
-                          (window as any).electronAPI.openExternal('https://www.postgresql.org/download/')
-                        } else {
-                          window.open('https://www.postgresql.org/download/', '_blank')
-                        }
-                      }}
-                      className="text-blue-600 hover:underline ml-auto"
-                    >
-                      下载 →
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-amber-800">
-                    <FolderOpen className="w-3.5 h-3.5" />
-                    <span className="font-medium">RustFS</span>
-                    <span className="text-amber-600">- 文件存储服务</span>
-                    <button 
-                      onClick={() => {
-                        if ((window as any).electronAPI?.openExternal) {
-                          (window as any).electronAPI.openExternal('https://github.com/rustfs/rustfs/releases')
-                        } else {
-                          window.open('https://github.com/rustfs/rustfs/releases', '_blank')
-                        }
-                      }}
-                      className="text-blue-600 hover:underline ml-auto"
-                    >
-                      下载 →
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-amber-800">
-                    <Download className="w-3.5 h-3.5" />
-                    <span className="font-medium">MinerU Models</span>
-                    <span className="text-amber-600">- AI 解析模型 (~5GB)</span>
-                    <button 
-                      onClick={() => {
-                        if ((window as any).electronAPI?.openExternal) {
-                          (window as any).electronAPI.openExternal('https://github.com/opendatalab/MinerU')
-                        } else {
-                          window.open('https://github.com/opendatalab/MinerU', '_blank')
-                        }
-                      }}
-                      className="text-blue-600 hover:underline ml-auto"
-                    >
-                      下载 →
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* 参数配置区域 */}
         <div className="space-y-6">

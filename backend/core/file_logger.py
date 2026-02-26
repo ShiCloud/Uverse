@@ -71,7 +71,7 @@ class FileLogManager:
         print(f"[FileLogManager] 初始化完成，日志目录: {self.log_dir}")
     
     def _get_log_dir(self, log_dir: str) -> Path:
-        """获取日志目录路径 - 开发模式使用项目目录，打包模式使用用户目录"""
+        """获取日志目录路径 - 开发模式使用项目目录，打包模式使用exe所在目录"""
         import sys
         
         # 开发环境：使用项目目录的 backend/logs
@@ -79,15 +79,9 @@ class FileLogManager:
             dev_log_dir = Path(__file__).parent.parent / log_dir
             return dev_log_dir
         
-        # 打包环境：使用用户可写目录
-        if os.name == 'nt':  # Windows
-            base_dir = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
-        elif os.uname().sysname == 'Darwin':  # macOS
-            base_dir = Path.home() / 'Library' / 'Application Support'
-        else:  # Linux
-            base_dir = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
-        
-        return base_dir / 'Uverse' / log_dir
+        # 打包环境：使用exe所在目录下的logs文件夹
+        exe_dir = Path(sys.executable).parent
+        return exe_dir / log_dir
     
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """设置事件循环"""

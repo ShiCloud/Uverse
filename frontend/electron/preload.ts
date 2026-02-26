@@ -43,6 +43,9 @@ interface ElectronAPI {
   
   // 环境信息
   isElectron: boolean
+  
+  // 事件监听
+  onNavigateToSettings: (callback: (data: { errors: string[]; message: string }) => void) => () => void
 }
 
 const electronAPI: ElectronAPI = {
@@ -69,6 +72,13 @@ const electronAPI: ElectronAPI = {
   
   // 环境信息
   isElectron: true,
+  
+  // 事件监听
+  onNavigateToSettings: (callback) => {
+    const handler = (_event: any, data: { errors: string[]; message: string }) => callback(data)
+    ipcRenderer.on('navigate-to-settings', handler)
+    return () => ipcRenderer.removeListener('navigate-to-settings', handler)
+  },
 }
 
 // 通过 contextBridge 安全地暴露 API

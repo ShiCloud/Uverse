@@ -10,7 +10,7 @@ from pathlib import Path
 
 # 导入公共工具模块
 from utils import DatabaseConfig, test_connection_with_retry, print_db_config
-from utils import resolve_path, check_executable, check_subdir, get_default_dir
+from utils import resolve_path_for_config, check_executable, check_subdir, get_default_dir
 
 
 def check_port_available(host: str, port: int) -> bool:
@@ -63,32 +63,32 @@ async def wait_for_service(name: str, host: str, port: int, timeout: float = 60.
 
 # 获取 .env 文件路径
 def get_env_file_path() -> Path:
-    user_data_dir = get_default_dir('')
-    user_env_path = user_data_dir / ".env"
+    """
+    获取 .env 文件路径
     
+    Windows 打包模式: 直接使用 exe 所在目录的 .env
+    其他模式: 使用项目目录的 .env
+    """
     if getattr(sys, 'frozen', False):
+        # 打包模式: 使用 exe 所在目录
         exe_dir = Path(sys.executable).parent
-        bundled_path = exe_dir / ".env"
-        
-        if not user_env_path.exists() and bundled_path.exists():
-            user_data_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(bundled_path, user_env_path)
-        
-        return user_env_path if user_env_path.exists() else bundled_path
+        return exe_dir / ".env"
     
+    # 开发模式: 使用项目目录的 .env
     dev_path = Path(__file__).parent / ".env"
-    if dev_path.exists():
-        return dev_path
-    
-    return user_env_path if user_env_path.exists() else dev_path
+    return dev_path
 
 
 # 加载 .env 文件
+# 注意：在打包模式下，Electron 会读取 .env 并通过环境变量传递给后端
+# 如果已经有环境变量（由 Electron 设置），则不覆盖它们
 from dotenv import load_dotenv
 env_path = get_env_file_path()
 if env_path.exists():
-    load_dotenv(env_path, override=True)
+    # 检查是否是由 Electron 启动的（通过检查是否有 Electron 传递的关键环境变量）
+    is_launched_by_electron = os.environ.get('DATABASE_URL') is not None
+    # 如果是 Electron 启动的，不覆盖现有环境变量；否则使用 override 模式
+    load_dotenv(env_path, override=not is_launched_by_electron)
 
 
 # 设置默认目录
@@ -316,8 +316,8 @@ async def _background_init_services():
         backend_dir = Path(__file__).parent
         
         # 检查必要文件/目录
-        store_dir = resolve_path(os.getenv("STORE_DIR", ""), backend_dir)
-        models_dir = resolve_path(os.getenv("MODELS_DIR", ""), backend_dir)
+        store_dir = resolve_path_for_config(os.getenv("STORE_DIR", ""), backend_dir)
+        models_dir = resolve_path_for_config(os.getenv("MODELS_DIR", ""), backend_dir)
         
         # 获取服务端口
         pg_port = int(os.getenv('PG_PORT', '15432'))

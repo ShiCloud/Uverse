@@ -4,6 +4,7 @@
  */
 import { app, BrowserWindow, ipcMain, screen, Tray, Menu } from 'electron'
 import * as path from 'path'
+import * as os from 'os'
 import { spawn, ChildProcess, execSync } from 'child_process'
 import * as fs from 'fs'
 import * as http from 'http'
@@ -57,39 +58,57 @@ function getBackendExeName(): string {
 /**
  * 获取配置根目录
  * - 调试模式: 前端源码目录 (frontend)
- * - 打包模式: userData 目录
+ * - 打包模式: resources 目录（与 .env 一致）
  */
 function getConfigRoot(): string {
   if (!app.isPackaged) {
     // 调试模式: __dirname 是 frontend/dist-electron，上级是 frontend
     return path.join(__dirname, '..')
   }
-  // 打包模式: 使用 userData
+  
+  // 打包模式: 使用 resources 目录
+  return getResourcesPath()
+}
+
+/**
+ * 获取用户数据目录（与后端保持一致）
+ * Windows: %LOCALAPPDATA%/Uverse
+ * macOS: ~/Library/Application Support/Uverse
+ * Linux: ~/.local/share/Uverse
+ */
+function getUserDataDir(): string {
+  if (process.platform === 'win32') {
+    // Windows 使用 Local 目录（与 Python 的 LOCALAPPDATA 一致）
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    return path.join(localAppData, 'Uverse')
+  }
+  // macOS/Linux 使用默认的 userData
   return app.getPath('userData')
 }
 
 /**
  * 获取 .env 文件路径
+ * 
+ * Windows 打包模式: exe 所在目录/.env
+ * 其他模式: 用户数据目录/.env 或 backend/.env
  */
 function getEnvPath(): string {
   if (!app.isPackaged) {
-    // 调试模式: 使用 backend/.env
-    return path.join(getBackendPath(), '.env')
+    // 调试模式: 使用 backend/.env（后端源码目录）
+    return path.join(getResourcesPath(), 'backend', '.env')
   }
-  // 打包模式: 使用 userData/.env
-  return path.join(app.getPath('userData'), '.env')
+  
+  // 打包模式: extraResources 会把 .env 复制到 resources 目录
+  return path.join(getResourcesPath(), '.env')
 }
 
 /**
  * 获取配置错误文件路径
  */
 function getConfigErrorsPath(): string {
-  if (!app.isPackaged) {
-    // 调试模式: 使用 frontend/.config_errors
-    return path.join(getConfigRoot(), '.config_errors')
-  }
-  // 打包模式: 使用 userData/.config_errors
-  return path.join(app.getPath('userData'), '.config_errors')
+  // 调试模式: 使用 frontend/.config_errors
+  // 打包模式: 使用用户数据目录/.config_errors
+  return path.join(getConfigRoot(), '.config_errors')
 }
 
 // ==================== 日志系统 ====================
@@ -152,21 +171,21 @@ function initLogDir(): void {
     LOG_INIT_ERROR += `; app root failed: ${e.message}`
   }
   
-  // 降级到 userData（仅打包模式会走到这里）
+  // 降级到用户数据目录（仅打包模式会走到这里）
   try {
-    const userData = app.getPath('userData')
-    LOG_DIR = path.join(userData, 'logs')
-    console.log('[Electron] Trying userData:', LOG_DIR)
+    const userDataDir = getUserDataDir()
+    LOG_DIR = path.join(userDataDir, 'logs')
+    console.log('[Electron] Trying userDataDir:', LOG_DIR)
     
     if (!fs.existsSync(LOG_DIR)) {
       fs.mkdirSync(LOG_DIR, { recursive: true })
     }
     
-    console.log('[Electron] Log dir initialized (userData):', LOG_DIR)
+    console.log('[Electron] Log dir initialized (userDataDir):', LOG_DIR)
     return
   } catch (e: any) {
-    console.error('[Electron] Failed to use userData:', e.message)
-    LOG_INIT_ERROR += `; userData failed: ${e.message}`
+    console.error('[Electron] Failed to use userDataDir:', e.message)
+    LOG_INIT_ERROR += `; userDataDir failed: ${e.message}`
     LOG_DIR = ''
   }
   
@@ -360,6 +379,8 @@ function loadEnvConfig(): void {
 }
 
 function getBackendPath(): string {
+  // 返回 backend 目录（与 .env 文件位置一致）
+  // 路径配置基于 backend 目录，而不是 uverse-backend 子目录
   return path.join(getResourcesPath(), 'backend')
 }
 
@@ -373,37 +394,27 @@ function resolveConfigPaths(): void {
   
   safeLog('[Electron] Resolving paths with base:', backendPath)
   
-  // 如果没有配置路径，使用默认�?backendPath 下的子目录
-  // 如果是相对路径，解析为基于 backendPath 的绝对路径
+  // 如果没有配置路径，使用默认值（相对路径，保留给后端解析）
+  // 用户配置的相对路径保持原样，由后端根据当前工作目录解析
   
   if (!config.postgresDir) {
-    config.postgresDir = path.join(backendPath, 'postgres')
-  } else if (!path.isAbsolute(config.postgresDir)) {
-    config.postgresDir = path.resolve(backendPath, config.postgresDir)
+    config.postgresDir = 'postgres'
   }
   
   if (!config.storeDir) {
-    config.storeDir = path.join(backendPath, 'store')
-  } else if (!path.isAbsolute(config.storeDir)) {
-    config.storeDir = path.resolve(backendPath, config.storeDir)
+    config.storeDir = 'store'
   }
   
   if (!config.modelsDir) {
-    config.modelsDir = path.join(backendPath, 'models')
-  } else if (!path.isAbsolute(config.modelsDir)) {
-    config.modelsDir = path.resolve(backendPath, config.modelsDir)
+    config.modelsDir = 'models'
   }
   
   if (!config.tempDir) {
-    config.tempDir = path.join(backendPath, 'temp')
-  } else if (!path.isAbsolute(config.tempDir)) {
-    config.tempDir = path.resolve(backendPath, config.tempDir)
+    config.tempDir = 'temp'
   }
   
   if (!config.mineruOutputDir) {
-    config.mineruOutputDir = path.join(backendPath, 'outputs')
-  } else if (!path.isAbsolute(config.mineruOutputDir)) {
-    config.mineruOutputDir = path.resolve(backendPath, config.mineruOutputDir)
+    config.mineruOutputDir = 'outputs'
   }
   
   // 调试模式下：如果 store 和 temp 目录不存在，自动创建
@@ -416,12 +427,15 @@ function resolveConfigPaths(): void {
     ]
     
     for (const dir of dirsToCreate) {
-      if (dir && !fs.existsSync(dir)) {
-        try {
-          fs.mkdirSync(dir, { recursive: true })
-          safeLog(`[Electron] Created directory: ${dir}`)
-        } catch (e) {
-          safeLog(`[Electron] Failed to create directory: ${dir}`, e)
+      if (dir) {
+        const resolvedDir = resolveConfigPath(dir)
+        if (!fs.existsSync(resolvedDir)) {
+          try {
+            fs.mkdirSync(resolvedDir, { recursive: true })
+            safeLog(`[Electron] Created directory: ${resolvedDir}`)
+          } catch (e) {
+            safeLog(`[Electron] Failed to create directory: ${resolvedDir}`, e)
+          }
         }
       }
     }
@@ -456,12 +470,27 @@ let servicesStartError: string = ''
 let pathCheckResult: { valid: boolean; postgres?: { valid: boolean; error?: string }; store?: { valid: boolean; error?: string }; models?: { valid: boolean; error?: string } } = { valid: true }
 
 // ==================== 配置验证 ====================
+// 解析配置路径（支持相对路径，基于 resources/backend 目录）
+function resolveConfigPath(configPath: string): string {
+  if (path.isAbsolute(configPath)) {
+    return configPath
+  }
+  // 相对路径，基于 resources/backend 目录解析
+  return path.join(getBackendPath(), configPath)
+}
+
 /**
  * 验证必要路径配置是否有效
  * 返回验证结果和错误信息
  */
 function validateRequiredPaths(): { valid: boolean; errors: string[] } {
   const errors: string[] = []
+  
+  safeLog('[Electron] Validating paths...')
+  safeLog('[Electron] getBackendPath:', getBackendPath())
+  safeLog('[Electron] config.postgresDir:', config.postgresDir)
+  safeLog('[Electron] config.storeDir:', config.storeDir)
+  safeLog('[Electron] config.modelsDir:', config.modelsDir)
   
   // POSTGRES_DIR 和 STORE_DIR 的基础校验
   const basicPaths = [
@@ -471,44 +500,54 @@ function validateRequiredPaths(): { valid: boolean; errors: string[] } {
   
   for (const { key, value, checkFile } of basicPaths) {
     if (!value || value.trim() === '') {
-      errors.push(`${key}: 路径无效`)
+      errors.push(`${key}: 路径未配置`)
       continue
     }
     
-    if (!fs.existsSync(value)) {
+    const resolvedPath = resolveConfigPath(value)
+    safeLog(`[Electron] ${key}: '${value}' -> resolved: '${resolvedPath}'`)
+    safeLog(`[Electron] ${key} exists:`, fs.existsSync(resolvedPath))
+    
+    if (!fs.existsSync(resolvedPath)) {
       if (!app.isPackaged && key === 'STORE_DIR') {
         try {
-          fs.mkdirSync(value, { recursive: true })
-          safeLog(`[Electron] Created directory: ${value}`)
+          fs.mkdirSync(resolvedPath, { recursive: true })
+          safeLog(`[Electron] Created directory: ${resolvedPath}`)
         } catch (e) {
-          errors.push(`${key}: 路径无效`)
+          errors.push(`${key}: 目录不存在且无法创建: ${resolvedPath}`)
           continue
         }
       } else {
-        errors.push(`${key}: 路径无效`)
+        errors.push(`${key}: 目录不存在: ${resolvedPath}`)
         continue
       }
     }
     
     if (checkFile) {
-      const checkPath = path.join(value, checkFile)
+      const checkPath = path.join(resolvedPath, checkFile)
+      safeLog(`[Electron] ${key} checkFile:`, checkPath, 'exists:', fs.existsSync(checkPath))
       if (!fs.existsSync(checkPath)) {
-        errors.push(`${key}: 路径无效`)
+        errors.push(`${key}: 缺少必要文件: ${checkFile}`)
       }
     }
   }
   
   // MODELS_DIR 特殊校验：检查 mineru.json 和 pipeline 路径
   const modelsDir = config.modelsDir
+  const resolvedModelsDir = modelsDir ? resolveConfigPath(modelsDir) : ''
+  safeLog(`[Electron] MODELS_DIR: '${modelsDir}' -> resolved: '${resolvedModelsDir}'`)
+  safeLog(`[Electron] MODELS_DIR exists:`, fs.existsSync(resolvedModelsDir))
+  
   if (!modelsDir || modelsDir.trim() === '') {
-    errors.push('MODELS_DIR: 路径无效')
-  } else if (!fs.existsSync(modelsDir)) {
-    errors.push('MODELS_DIR: 路径无效')
+    errors.push('MODELS_DIR: 路径未配置')
+  } else if (!fs.existsSync(resolvedModelsDir)) {
+    errors.push(`MODELS_DIR: 目录不存在: ${resolvedModelsDir}`)
   } else {
     // 检查 mineru.json 是否存在
-    const mineruJsonPath = path.join(modelsDir, 'mineru.json')
+    const mineruJsonPath = path.join(resolvedModelsDir, 'mineru.json')
+    safeLog(`[Electron] mineru.json path:`, mineruJsonPath, 'exists:', fs.existsSync(mineruJsonPath))
     if (!fs.existsSync(mineruJsonPath)) {
-      errors.push('MODELS_DIR: 路径无效')
+      errors.push(`MODELS_DIR: 缺少 mineru.json: ${mineruJsonPath}`)
     } else {
       try {
         // 读取 mineru.json
@@ -525,8 +564,8 @@ function validateRequiredPaths(): { valid: boolean; errors: string[] } {
           if (path.isAbsolute(pipelinePath)) {
             resolvedPipelinePath = pipelinePath
           } else {
-            // 相对路径，基于 MODELS_DIR
-            resolvedPipelinePath = path.join(modelsDir, pipelinePath)
+            // 相对路径，基于 MODELS_DIR 的绝对路径
+            resolvedPipelinePath = path.join(resolvedModelsDir, pipelinePath)
           }
           
           // 检查 pipeline 目录是否存在且非空
@@ -768,11 +807,13 @@ function startPostgres(): boolean {
   safeLog('[Electron] Starting PostgreSQL on port', config.pgPort)
   safeLog('[Electron] PG directory:', config.postgresDir)
   
-  const pgCtl = path.join(config.postgresDir, 'bin', getPgCtlExeName())
+  // 使用解析后的绝对路径
+  const pgDir = resolveConfigPath(config.postgresDir)
+  const pgCtl = path.join(pgDir, 'bin', getPgCtlExeName())
   safeLog('[Electron] pg_ctl path:', pgCtl)
   safeLog('[Electron] pg_ctl exists:', fs.existsSync(pgCtl))
-  const dataDir = path.join(config.postgresDir, 'data')
-  const logFile = path.join(config.postgresDir, 'logfile')
+  const dataDir = path.join(pgDir, 'data')
+  const logFile = path.join(pgDir, 'logfile')
   
   if (!fs.existsSync(pgCtl)) {
     safeError('[Electron] pg_ctl not found:', pgCtl)
@@ -788,7 +829,7 @@ function startPostgres(): boolean {
   // 初始化数据目录（如果不存在）
   if (!fs.existsSync(dataDir)) {
     safeLog('[Electron] Initializing PostgreSQL data directory...')
-    const initdb = path.join(config.postgresDir, 'bin', 'initdb.exe')
+    const initdb = path.join(pgDir, 'bin', 'initdb.exe')
     if (fs.existsSync(initdb)) {
       try {
         execSync(`"${initdb}" -D "${dataDir}" --encoding=UTF8 --locale=C`, {
@@ -832,7 +873,9 @@ function startRustfs(): boolean {
   safeLog('[Electron] Starting RustFS on port', config.rustfsPort)
   safeLog('[Electron] Store directory:', config.storeDir)
   
-  const rustfsPath = path.join(config.storeDir, getRustfsExeName())
+  // 使用解析后的绝对路径
+  const storeDir = resolveConfigPath(config.storeDir)
+  const rustfsPath = path.join(storeDir, getRustfsExeName())
   safeLog('[Electron] rustfs path:', rustfsPath)
   safeLog('[Electron] rustfs exists:', fs.existsSync(rustfsPath))
   
@@ -842,7 +885,7 @@ function startRustfs(): boolean {
   }
   
   // 确保数据目录存在
-  const dataDir = path.join(config.storeDir, 'data')
+  const dataDir = path.join(storeDir, 'data')
   try {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true })
@@ -862,7 +905,7 @@ function startRustfs(): boolean {
       '--secret-key', 'rustfsadmin',
       '--region', 'us-east-1'
     ], {
-      cwd: config.storeDir,
+      cwd: storeDir,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']  // 捕获 stdout 和 stderr
     })
@@ -1153,7 +1196,7 @@ app.whenReady().then(async () => {
   createTray()
   
   if (!validation.valid) {
-    // 配置不完整，不启动服务，让用户去设置页面配置
+    // 配置不完整，不启动服务，跳转到设置页面
     safeLog('[Electron] Configuration incomplete, skipping service startup')
     safeLog('[Electron] Validation errors:', validation.errors)
     servicesStartStatus = 'idle'
@@ -1172,6 +1215,16 @@ app.whenReady().then(async () => {
       const errorFile = getConfigErrorsPath()
       fs.writeFileSync(errorFile, JSON.stringify(validation.errors), 'utf-8')
     } catch {}
+    
+    // 通知前端跳转到设置页面
+    if (mainWindow) {
+      mainWindow.webContents.once('dom-ready', () => {
+        mainWindow?.webContents.send('navigate-to-settings', { 
+          errors: validation.errors,
+          message: '路径配置无效，请修正后重新启动'
+        })
+      })
+    }
     
     return
   }
@@ -1378,6 +1431,8 @@ ipcMain.handle('config:getFromEnv', () => {
   const envPath = getEnvPath()
   safeLog('[IPC] getConfigFromEnv - reading from:', envPath)
   safeLog('[IPC] isPackaged:', app.isPackaged)
+  safeLog('[IPC] process.resourcesPath:', process.resourcesPath)
+  safeLog('[IPC] __dirname:', __dirname)
   
   const configs: Array<{key: string; value: string; description: string; category: string}> = []
   

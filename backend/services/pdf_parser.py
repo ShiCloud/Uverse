@@ -9,6 +9,10 @@ import io
 from pathlib import Path
 from typing import Dict, Optional, Callable
 
+# 导入路径解析工具
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.path import resolve_path_for_config
+
 # 注意：多进程启动方法在 main.py 中统一设置，避免重复设置
 # if hasattr(sys, '_MEIPASS'):
 #     import multiprocessing
@@ -198,12 +202,12 @@ def get_mineru_config_path() -> str:
         raise Exception("MODELS_DIR 环境变量未配置，无法找到 mineru.json")
     
     # 步骤 2: 解析 MODELS_DIR 路径
+    # 使用 resolve_path_for_config 正确处理打包模式下的路径
     try:
-        if os.path.isabs(models_dir_env):
-            models_dir = Path(models_dir_env)
-        else:
-            backend_dir = Path(__file__).parent.parent
-            models_dir = backend_dir / models_dir_env
+        backend_dir = Path(__file__).parent.parent
+        models_dir = resolve_path_for_config(models_dir_env, backend_dir)
+        if models_dir is None:
+            raise Exception("MODELS_DIR 解析失败")
         models_dir = models_dir.resolve()
     except Exception as e:
         raise Exception(f"解析 MODELS_DIR 失败: {e}")

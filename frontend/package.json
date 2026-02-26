@@ -1,5 +1,7 @@
 {
   "name": "Uverse",
+  "description": "Uverse - 本地知识库工具",
+  "author": "Uverse Team",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -23,7 +25,7 @@
       },
       {
         "from": "../backend/.env",
-        "to": "backend/.env"
+        "to": ".env"
       },
       {
         "from": "build/icon.png",
@@ -66,7 +68,6 @@
     "electron:build": "npm run build && npm run build:electron && electron-builder",
     "electron:build:mac": "cd .. && ./scripts/build-and-install-mac.sh",
     "electron:build:win": "call ..\\scripts\\build-all-win.bat",
-    "electron:build:win:all": "call ..\\scripts\\build-all-win-full.bat",
     "postinstall": "electron-builder install-app-deps",
     "watch": "npm run build:watch",
     "watch:all": "concurrently \"npm run build:watch\" \"npm run build:electron:watch\"",
