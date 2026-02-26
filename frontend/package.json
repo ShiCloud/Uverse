@@ -17,13 +17,9 @@
     ],
     "extraResources": [
       {
-        "from": "../backend/dist/backend",
+        "from": "../backend/dist/uverse-backend",
         "to": "backend",
-        "filter": [
-          "**/*",
-          "!__pycache__/**/*",
-          "!*.pyc"
-        ]
+        "filter": ["**/*", "!__pycache__/**/*", "!*.pyc"]
       },
       {
         "from": "../backend/.env",

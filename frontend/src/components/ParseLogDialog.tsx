@@ -104,17 +104,22 @@ export function ParseLogDialog({
     lastLogCountRef.current = 0
   }
 
-  // 首次加载和轮询
+  // 统一管理的轮询 effect - 合并 status 和 isOpen/taskId 的监听
   useEffect(() => {
     if (!isOpen || !taskId) return
 
-    // 重置状态
-    lastLogCountRef.current = 0
-    setLogs([])
-    setIsTruncated(false)
+    // 只在首次打开时重置状态和加载日志
+    if (lastLogCountRef.current === 0) {
+      setLogs([])
+      setIsTruncated(false)
+      loadLogs()
+    }
     
-    // 立即加载一次
-    loadLogs()
+    // 清除旧轮询（如果存在）
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
     
     // 根据状态设置轮询间隔
     const interval = (status === 'processing' || status === 'parsing') 
@@ -129,32 +134,7 @@ export function ParseLogDialog({
         pollIntervalRef.current = null
       }
     }
-    // 注意：只监听 isOpen 和 taskId，status 变化在另一个 effect 处理
-  }, [isOpen, taskId, loadLogs])
-
-  // 状态变化时调整轮询间隔（不重置日志）
-  useEffect(() => {
-    if (!isOpen || !taskId) return
-    
-    // 清除旧轮询
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current)
-    }
-    
-    // 设置新轮询间隔
-    const interval = (status === 'processing' || status === 'parsing') 
-      ? POLL_INTERVAL_ACTIVE 
-      : POLL_INTERVAL_COMPLETED
-    
-    pollIntervalRef.current = setInterval(loadLogs, interval)
-    
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-      }
-    }
-    // 注意：不监听 loadLogs，避免不必要的重新创建
-  }, [status])
+  }, [isOpen, taskId, status, loadLogs])
 
   // 自动滚动到底部（仅在解析中时）
   useEffect(() => {

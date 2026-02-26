@@ -117,6 +117,25 @@ for pkg in ['aiohttp', 'aiofiles', 'ftfy', 'regex', 'tenacity', 'dill', 'attrs',
 # pdf_cli_wrapper.py 脚本
 datas_main = [(str(backend_dir / 'workers/pdf_wrapper.py'), '.')]
 
+# 添加项目自定义模块作为数据文件（确保打包时包含）
+project_modules = ['routers', 'services', 'core', 'workers', 'config', 'models', 'utils']
+for module in project_modules:
+    module_path = backend_dir / module
+    if module_path.exists() and module_path.is_dir():
+        # 添加模块目录下的所有 .py 文件
+        for py_file in module_path.rglob('*.py'):
+            if '__pycache__' not in str(py_file):
+                rel_path = py_file.relative_to(backend_dir)
+                target_dir = str(rel_path.parent)
+                datas_main.append((str(py_file), target_dir))
+        print(f"✅ 已添加模块 {module}: {len(list(module_path.rglob('*.py')))} 个文件")
+
+# 添加根目录下的 .py 文件
+for py_file in backend_dir.glob('*.py'):
+    if py_file.name != 'combined.spec':
+        datas_main.append((str(py_file), '.'))
+        print(f"✅ 已添加根目录文件: {py_file.name}")
+
 # 手动添加单文件模块（collect_all 可能遗漏的）
 for single_file in ['typing_extensions.py', 'six.py']:
     src = venv_path / single_file
@@ -221,6 +240,30 @@ SHARED_HIDDENIMPORTS = all_hiddenimports + [
     
     # 其他
     'cffi', 'pycparser',
+    
+    # ===== 项目自定义模块 =====
+    # 路由
+    'routers', 'routers.chat', 'routers.documents', 'routers.health', 'routers.config', 'routers.logs',
+    
+    # 服务
+    'services', 'services.rustfs_storage', 'services.pdf_parser', 'services.word_parser', 
+    'services.text_parser',
+    
+    # 核心模块
+    'core', 'core.database', 'core.storage', 'core.postgres_manager', 'core.file_logger',
+    'core.parse_file_logger', 'core.app_logger', 'core.parse_logger',
+    
+    # 工作进程
+    'workers', 'workers.pool', 'workers.pdf_worker', 'workers.pdf_wrapper',
+    
+    # 配置
+    'config', 'config.rustfs',
+    
+    # 模型
+    'models',
+    
+    # 工具
+    'utils', 'utils.env', 'utils.db', 'utils.path',
 ]
 
 # ============================================
@@ -330,5 +373,5 @@ coll = COLLECT(
     a_worker.datas,
     strip=False,
     upx=False,
-    name='backend'
+    name='uverse-backend'
 )

@@ -17,8 +17,26 @@ interface ElectronAPI {
     port?: number
     pgConfigStatus?: 'ok' | 'not_found' | 'error'
     pgConfigError?: string
+    pathCheck?: {
+      valid: boolean
+      postgres?: { valid: boolean; error?: string }
+      store?: { valid: boolean; error?: string }
+      models?: { valid: boolean; error?: string }
+    }
+    servicesStartStatus?: 'idle' | 'starting' | 'started' | 'failed'
+    servicesStartError?: string
   }>
+  waitForServicesStart: () => Promise<{ status: string; error?: string; pathCheck?: any }>
+  startServices: () => Promise<{ success: boolean; status: string; error?: string }>
   restartBackend: () => Promise<{ success: boolean }>
+  
+  // 配置管理（后端未启动时使用）
+  getConfigFromEnv: () => Promise<{ success: boolean; configs?: Array<{key: string; value: string; description: string; category: string}>; message?: string }>
+  saveConfigToEnv: (configs: Record<string, string>) => Promise<{ success: boolean; message?: string; pathErrors?: Record<string, string> }>
+  checkPaths: (paths: Record<string, string>) => Promise<{ valid: boolean; errors: Record<string, string> }>
+  
+  // 前端日志
+  logWrite: (level: string, message: string) => Promise<void>
   
   // 系统操作
   openExternal: (url: string) => Promise<void>
@@ -34,7 +52,17 @@ const electronAPI: ElectronAPI = {
   
   // 后端服务
   getBackendStatus: () => ipcRenderer.invoke('backend:getStatus'),
+  waitForServicesStart: () => ipcRenderer.invoke('backend:waitForStart'),
+  startServices: () => ipcRenderer.invoke('services:start'),
   restartBackend: () => ipcRenderer.invoke('backend:restart'),
+  
+  // 配置管理（后端未启动时使用）
+  getConfigFromEnv: () => ipcRenderer.invoke('config:getFromEnv'),
+  saveConfigToEnv: (configs: Record<string, string>) => ipcRenderer.invoke('config:saveToEnv', configs),
+  checkPaths: (paths: Record<string, string>) => ipcRenderer.invoke('config:checkPaths', paths),
+  
+  // 前端日志
+  logWrite: (level: string, message: string) => ipcRenderer.invoke('log:write', level, message),
   
   // 系统操作
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),

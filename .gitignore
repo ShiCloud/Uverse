@@ -24,6 +24,9 @@ wheels/
 *.egg
 *.log
 support/
+output/
+logs/
+temp/
 
 # Node
 node_modules/
@@ -35,6 +38,7 @@ yarn-error.log*
 # Frontend build
 dist/
 dist-backend/
+dist-electron/
 *.local
 
 # Editor
@@ -62,3 +66,4 @@ models/
 out/
 release/
 dist-backend/
+docs/CHANGELOG.md

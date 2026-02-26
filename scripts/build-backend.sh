@@ -120,6 +120,16 @@ if [ -f "$BACKEND_DIR/.env" ]; then
     echo -e "${GREEN}✅ .env 已复制到 uverse-backend/ 目录${NC}"
 fi
 
+# 复制 mineru.json（MinerU 配置文件模板）到 models/ 目录
+# 应用运行时将从 MODELS_DIR 或 Support 目录读取此文件
+if [ -f "$BACKEND_DIR/models/mineru.json" ]; then
+    mkdir -p "$OUTPUT_DIR/uverse-backend/models"
+    cp "$BACKEND_DIR/models/mineru.json" "$OUTPUT_DIR/uverse-backend/models/mineru.json"
+    echo -e "${GREEN}✅ mineru.json 已复制到 uverse-backend/models/ 目录${NC}"
+else
+    echo -e "${RED}⚠️  mineru.json 不存在于 $BACKEND_DIR/models/，打包后的应用可能无法正常工作${NC}"
+fi
+
 # 显示结果
 echo ""
 echo -e "${GREEN}========================================${NC}"

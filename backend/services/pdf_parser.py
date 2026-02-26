@@ -167,79 +167,162 @@ class TqdmInterceptor(io.TextIOBase):
         self.stop()
 
 
+def _is_relative_subpath(path_str: str) -> bool:
+    """检查路径是否为相对子路径（不是绝对路径，不以 / 或 盘符开头）"""
+    if not path_str:
+        return False
+    # Windows: 检查盘符，如 C:\
+    if len(path_str) >= 2 and path_str[1] == ':':
+        return False
+    # Unix/Windows: 检查是否以 / 或 \ 开头
+    if path_str.startswith('/') or path_str.startswith('\\'):
+        return False
+    return True
+
+
 def get_mineru_config_path() -> str:
     """
     获取 MinerU 配置文件路径
-    如果 MODELS_DIR 环境变量被设置且模型目录存在，更新 mineru.json 中的路径
-    返回 mineru.json 的路径
+    
+    必须配置 MODELS_DIR 环境变量，且该目录下必须包含 mineru.json
+    如果 mineru.json 中的 models-dir 是相对路径，
+    且与 mineru.json 同级目录，则更新为绝对路径
+    
+    Raises:
+        Exception: 如果 MODELS_DIR 未配置或 mineru.json 不存在
     """
-    # 检测是否在 PyInstaller 打包环境中
-    is_frozen = getattr(sys, 'frozen', False)
-    
-    if is_frozen:
-        # 打包环境下，exe 直接在 resources/backend/ 目录
-        # mineru.json 在 resources/backend/models/ 目录
-        backend_dir = Path(sys.executable).parent  # backend/
-        default_config_path = backend_dir / "models" / "mineru.json"
-    else:
-        project_root = Path(__file__).parent.parent.parent
-        default_config_path = project_root / "backend/models/mineru.json"
-    
     models_dir_env = os.getenv("MODELS_DIR")
     
+    # 步骤 1: 检查 MODELS_DIR 是否配置
     if not models_dir_env:
-        # 使用默认配置
-        return str(default_config_path)
+        raise Exception("MODELS_DIR 环境变量未配置，无法找到 mineru.json")
     
-    # 解析模型目录路径
-    if os.path.isabs(models_dir_env):
-        models_dir = Path(models_dir_env)
-    else:
-        # 相对路径，基于 backend 目录
-        backend_dir = Path(__file__).parent.parent
-        models_dir = backend_dir / models_dir_env
-    
-    models_dir = models_dir.resolve()
-    
-    # 检查模型目录是否存在
-    opendatalab_path = models_dir / "OpenDataLab"
-    if not opendatalab_path.exists():
-        print(f"[WARN] 模型目录不存在: {opendatalab_path}，使用默认配置")
-        return str(default_config_path)
-    
-    # 构建模型子目录的绝对路径
-    pipeline_model = models_dir / "OpenDataLab/PDF-Extract-Kit-1___0"
-    vlm_model = models_dir / "OpenDataLab/MinerU2___5-2509-1___2B"
-    
-    # 检查具体的模型子目录是否存在
-    if not pipeline_model.exists():
-        print(f"[WARN] Pipeline 模型不存在: {pipeline_model}")
-    if not vlm_model.exists():
-        print(f"[WARN] VLM 模型不存在: {vlm_model}")
-    
-    # 更新 mineru.json 中的 models-dir 为绝对路径
+    # 步骤 2: 解析 MODELS_DIR 路径
     try:
-        if default_config_path.exists():
-            with open(default_config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            # 更新 models-dir 为绝对路径
-            config["models-dir"] = {
-                "pipeline": str(pipeline_model),
-                "vlm": str(vlm_model)
-            }
-            
-            # 写回文件
-            with open(default_config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4, ensure_ascii=False)
-            
-            print(f"[INFO] 已更新 mineru.json 模型路径: {models_dir}")
+        if os.path.isabs(models_dir_env):
+            models_dir = Path(models_dir_env)
         else:
-            print(f"[WARN] mineru.json 不存在: {default_config_path}")
+            backend_dir = Path(__file__).parent.parent
+            models_dir = backend_dir / models_dir_env
+        models_dir = models_dir.resolve()
     except Exception as e:
-        print(f"[ERROR] 更新 mineru.json 失败: {e}")
+        raise Exception(f"解析 MODELS_DIR 失败: {e}")
     
-    return str(default_config_path)
+    # 步骤 3: 检查 MODELS_DIR 下是否有 mineru.json
+    config_path = models_dir / "mineru.json"
+    if not config_path.exists():
+        raise Exception(f"mineru.json 不存在于 MODELS_DIR: {config_path}，请确保模型目录配置正确")
+    
+    print(f"[INFO] 使用 MODELS_DIR 下的 mineru.json: {config_path}")
+    
+    # 步骤 4: 读取配置并更新为基于当前 MODELS_DIR 的正确绝对路径
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        models_dir_config = config.get("models-dir", {})
+        pipeline_path = models_dir_config.get("pipeline", "")
+        vlm_path = models_dir_config.get("vlm", "")
+        
+        print(f"[DEBUG] 当前 models-dir: pipeline={pipeline_path}, vlm={vlm_path}")
+        print(f"[DEBUG] models_dir (MODELS_DIR): {models_dir}")
+        
+        updated = False
+        
+        # 定义标准模型路径（基于当前 MODELS_DIR）
+        standard_pipeline = models_dir / "OpenDataLab" / "PDF-Extract-Kit-1___0"
+        standard_vlm = models_dir / "OpenDataLab" / "MinerU2___5-2509-1___2B"
+        
+        # 更新 pipeline 路径
+        if pipeline_path:
+            # 检查是否为相对路径
+            is_relative = _is_relative_subpath(pipeline_path)
+            
+            if is_relative:
+                # 相对路径：解析为基于 MODELS_DIR 的绝对路径
+                expected_path = models_dir / pipeline_path
+                print(f"[DEBUG] pipeline relative, expected_path={expected_path}")
+                
+                if expected_path.exists():
+                    models_dir_config["pipeline"] = str(expected_path.resolve())
+                    updated = True
+                    print(f"[INFO] 更新 pipeline 为绝对路径: {models_dir_config['pipeline']}")
+                else:
+                    print(f"[WARN] pipeline 路径不存在: {expected_path}")
+            else:
+                # 绝对路径：检查是否需要更新为当前 MODELS_DIR 下的标准路径
+                current_path = Path(pipeline_path)
+                if current_path.exists():
+                    # 路径有效，但仍检查是否应该使用标准路径
+                    if standard_pipeline.exists() and current_path != standard_pipeline:
+                        models_dir_config["pipeline"] = str(standard_pipeline.resolve())
+                        updated = True
+                        print(f"[INFO] 更新 pipeline 为标准路径: {models_dir_config['pipeline']}")
+                    else:
+                        print(f"[DEBUG] pipeline 路径有效，无需更新: {pipeline_path}")
+                else:
+                    # 路径无效（可能是旧位置的绝对路径），尝试使用标准路径
+                    print(f"[WARN] pipeline 路径无效: {pipeline_path}")
+                    if standard_pipeline.exists():
+                        models_dir_config["pipeline"] = str(standard_pipeline.resolve())
+                        updated = True
+                        print(f"[INFO] 更新 pipeline 为标准路径: {models_dir_config['pipeline']}")
+        else:
+            # pipeline 为空，尝试设置为标准路径
+            if standard_pipeline.exists():
+                models_dir_config["pipeline"] = str(standard_pipeline.resolve())
+                updated = True
+                print(f"[INFO] 设置 pipeline 为标准路径: {models_dir_config['pipeline']}")
+        
+        # 更新 vlm 路径（逻辑相同）
+        if vlm_path:
+            is_relative = _is_relative_subpath(vlm_path)
+            
+            if is_relative:
+                expected_path = models_dir / vlm_path
+                print(f"[DEBUG] vlm relative, expected_path={expected_path}")
+                
+                if expected_path.exists():
+                    models_dir_config["vlm"] = str(expected_path.resolve())
+                    updated = True
+                    print(f"[INFO] 更新 vlm 为绝对路径: {models_dir_config['vlm']}")
+                else:
+                    print(f"[WARN] vlm 路径不存在: {expected_path}")
+            else:
+                current_path = Path(vlm_path)
+                if current_path.exists():
+                    if standard_vlm.exists() and current_path != standard_vlm:
+                        models_dir_config["vlm"] = str(standard_vlm.resolve())
+                        updated = True
+                        print(f"[INFO] 更新 vlm 为标准路径: {models_dir_config['vlm']}")
+                    else:
+                        print(f"[DEBUG] vlm 路径有效，无需更新: {vlm_path}")
+                else:
+                    print(f"[WARN] vlm 路径无效: {vlm_path}")
+                    if standard_vlm.exists():
+                        models_dir_config["vlm"] = str(standard_vlm.resolve())
+                        updated = True
+                        print(f"[INFO] 更新 vlm 为标准路径: {models_dir_config['vlm']}")
+        else:
+            if standard_vlm.exists():
+                models_dir_config["vlm"] = str(standard_vlm.resolve())
+                updated = True
+                print(f"[INFO] 设置 vlm 为标准路径: {models_dir_config['vlm']}")
+        
+        # 写回文件
+        if updated:
+            config["models-dir"] = models_dir_config
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            print(f"[INFO] 已更新 mineru.json 中的模型路径")
+        else:
+            print(f"[INFO] mineru.json 路径配置正确")
+    except Exception as e:
+        print(f"[ERROR] 读取或更新 mineru.json 失败: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return str(config_path)
 
 
 def get_mineru_output_dir() -> Path:

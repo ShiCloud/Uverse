@@ -1,4 +1,5 @@
 -- 初始化数据库
+create database knowledge_base;
 -- 启用 pgvector 扩展
 CREATE EXTENSION IF NOT EXISTS vector;
 

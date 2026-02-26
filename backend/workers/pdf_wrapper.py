@@ -47,6 +47,10 @@ def log(level: str, message: str):
     Args:
         level: 日志级别
         message: 日志消息
+    
+    注意：只写入日志文件，不输出到 stdout。
+    stdout 只用于输出 JSON 结果，避免与日志混淆导致重复写入。
+    主进程通过读取日志文件来获取日志内容。
     """
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     log_entry = {
@@ -55,19 +59,14 @@ def log(level: str, message: str):
         "message": message
     }
     
-    # 写入日志文件
+    # 只写入日志文件，由主进程读取文件获取日志
+    # 不输出到 stdout，避免 pool.py 从 stdout 读取后再次写入文件导致重复
     if LOG_FILE:
         try:
             with open(LOG_FILE, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
         except Exception:
             pass
-    
-    # 输出到 stdout（用于进程间通信，让主进程可以实时看到日志）
-    try:
-        print(f"[{level}] {message}", flush=True)
-    except UnicodeEncodeError:
-        print(f"[{level}] {message.encode('utf-8', errors='replace').decode('utf-8')}", flush=True)
 
 
 class LoguruInterceptor:
@@ -402,8 +401,12 @@ def main():
         
         if md_file and os.path.exists(md_file):
             import shutil
-            shutil.copyfile(md_file, str(final_md_path))
-            log("INFO", f"已复制 Markdown 到: {final_md_path}")
+            # 检查是否是同一个文件（避免 SameFileError）
+            if Path(md_file).resolve() != final_md_path.resolve():
+                shutil.copyfile(md_file, str(final_md_path))
+                log("INFO", f"已复制 Markdown 到: {final_md_path}")
+            else:
+                log("INFO", f"Markdown 文件已在目标位置: {final_md_path}")
         
         # 输出结果到 stdout
         result = {

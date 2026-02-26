@@ -1,4 +1,4 @@
-# Uverse - 本地知识库工具
+<h1 align="center">Uverse - 本地知识库工具</h1>
 
 <p align="center">
   <img src="frontend/src/assets/icon.png" width="120" alt="Uverse Logo">
@@ -22,14 +22,18 @@
 ## ✨ 功能特性
 
 ### 文档管理
+
 - 📄 支持 PDF、Word (.docx)、TXT、CSV 等多种格式
 - 📤 拖拽上传 / 批量上传
-- 🔍 文档内容预览，在线修改及下载
+- 🔍 文档内容预览、在线修改及下载
 
 ### 智能解析
+
 - 🧠 **MinerU 智能解析** - 支持复杂版面分析、表格识别、公式提取
 - 🖼️ **图像提取与 OCR** - 自动提取文档中的图片并进行文字识别
 - 📊 **表格识别** - 智能识别文档中的表格结构
+
+---
 
 ## 🚀 快速开始
 
@@ -41,35 +45,36 @@
 
 ### 安装步骤
 
-# Windows:
+#### Windows
+
 - **网盘地址：解压即用**
-- **https://pan.baidu.com/s/19cqBEHWWZ1X571ndtNeR9Q?pwd=y8w1**
+- **<https://pan.baidu.com/s/1JniPby6dO60zxdpL7BZS3w?pwd=u3qt>**
 
+#### macOS
 
-# macOS:
-- **先安装程序，后将models，postgres，store，out文件夹复制到 ~/Library/Application Support/Uverse/，或者自己选择的目录，程序第一次启动，如果找不到默认目录下的程序会跳转到配置页面，配置相关目录，**
+1. 下载并解压压缩包到指定位置
+2. **执行以下命令解除安全限制：**
 
-```bash
-sudo xattr -r -d com.apple.quarantine /Users/shifeng/Library/Application\ Support/Uverse/postgres
-sudo xattr -r -d com.apple.provenance /Users/shifeng/Library/Application\ Support/Uverse/postgres
+   ```bash
+   sudo xattr -r -d com.apple.quarantine <解压目录>/Uverse/
+   ```
 
-sudo xattr -r -d com.apple.quarantine /Users/shifeng/Library/Application\ Support/Uverse/store
-sudo xattr -r -d com.apple.provenance /Users/shifeng/Library/Application\ Support/Uverse/store
-```
+3. 首次启动时，若程序找不到相关文件，会自动跳转到配置页面，请在配置页面设置正确的 `models`、`postgres`、`store`、`out` 目录路径
+4. 重启程序
+
 - **网盘地址：**
+- **<https://pan.baidu.com/s/1JniPby6dO60zxdpL7BZS3w?pwd=u3qt>**
 
+## 🛠️ 开发调试
 
-
-## 🚀 开发调试
-
-#### 1. 克隆仓库
+### 1. 克隆仓库
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/ShiCloud/Uverse.git
 cd Uverse
 ```
 
-#### 2. 安装后端依赖
+### 2. 安装后端依赖
 
 ```bash
 cd backend
@@ -87,13 +92,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-#### 3. 安装前端依赖
+### 3. 安装前端依赖
 
 ```bash
 cd ../frontend
 npm install
 ```
-
 
 ### 打包
 
@@ -138,6 +142,7 @@ npm run electron:build:win
 - [MinerU](https://github.com/opendatalab/MinerU) - 开源的 PDF 智能解析工具
 - [FastAPI](https://fastapi.tiangolo.com/) - 现代 Python Web 框架
 - [Shadcn/ui](https://ui.shadcn.com/) - 精美的 React 组件库
+
 
 ---
 

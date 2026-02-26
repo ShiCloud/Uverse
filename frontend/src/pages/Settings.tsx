@@ -25,7 +25,7 @@ import {
   X,
   Sparkles
 } from 'lucide-react'
-import { getConfigs, updateConfigs, getConfigCategories, getLogs, getLogLevels, checkPaths, shutdownApp, getDbStatus, testDbConnection } from '../utils/api'
+import { getConfigs, updateConfigs, getConfigCategories, getLogs, getLogLevels, shutdownApp, getDbStatus, testDbConnection } from '../utils/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -110,6 +110,8 @@ function Settings() {
   const [hidePathErrors, setHidePathErrors] = useState(false)
   // PostgreSQL 配置错误（从 localStorage 读取）
   const [pgConfigError, setPgConfigError] = useState<string | null>(null)
+  // 服务启动状态
+  const [servicesStatus, setServicesStatus] = useState<'idle' | 'starting' | 'started' | 'failed'>('idle')
 
   // 密码/密钥类配置项
   const PASSWORD_KEYS = ['OPENAI_API_KEY', 'SECRET_KEY', 'API_KEY', 'TOKEN']
@@ -222,9 +224,22 @@ function Settings() {
     const savedPgError = localStorage.getItem('pg_config_error')
     if (savedPgError) {
       setPgConfigError(savedPgError)
-      // 显示错误后清除，避免重复显示
+      // 显示后清除，避免重复显示
       localStorage.removeItem('pg_config_error')
       localStorage.removeItem('pg_config_status')
+    }
+    
+    // 从 localStorage 读取路径配置错误
+    const savedPathErrors = localStorage.getItem('path_errors')
+    if (savedPathErrors) {
+      try {
+        const pathErrorsObj = JSON.parse(savedPathErrors)
+        setPathErrors(pathErrorsObj)
+        // 显示后清除，避免重复显示
+        localStorage.removeItem('path_errors')
+      } catch (e) {
+        console.error('[Settings] 解析路径错误失败:', e)
+      }
     }
   }, [])
 
@@ -438,8 +453,61 @@ function Settings() {
     setSaveError(null)
     setHideDbError(false)
     setHidePathErrors(false)
+    
+    // ========== Electron 环境：优先使用 IPC 读取配置（不依赖后端）==========
+    if ((window as any).electronAPI?.getConfigFromEnv) {
+      console.log('[Settings] Electron 环境，使用 IPC 读取配置')
+      try {
+        const envConfig = await (window as any).electronAPI.getConfigFromEnv()
+        if (envConfig.success && envConfig.configs) {
+          setConfigs(envConfig.configs)
+          const initialValues: Record<string, string> = {}
+          envConfig.configs.forEach((config: ConfigItem) => {
+            initialValues[config.key] = config.value
+          })
+          setEditedValues(initialValues)
+          
+          // 设置分类
+          const categoryTitles: Record<string, string> = {
+            'server': '服务配置',
+            'database': '数据库配置',
+            'mineru': 'MinerU 配置',
+            'openai': 'OpenAI 配置',
+            'other': '其他配置'
+          }
+          setCategories(categoryTitles)
+          
+          // 配置加载完成后立即结束 loading 状态
+          setConfigLoading(false)
+          
+          // 检查服务状态（通过 Electron IPC）
+          if ((window as any).electronAPI?.getBackendStatus) {
+            (window as any).electronAPI.getBackendStatus().then((status: any) => {
+              setServicesStatus(status.servicesStartStatus || 'idle')
+            }).catch(() => {
+              setServicesStatus('idle')
+            })
+          }
+          
+          // 数据库状态在后台加载，不阻塞配置显示
+          getDbStatus().catch(() => null).then(dbStatusData => {
+            if (dbStatusData) {
+              setDbStatus(dbStatusData)
+            }
+          })
+          
+          // IPC 读取成功，结束 loading
+          setConfigLoading(false)
+          return
+        }
+      } catch (ipcError) {
+        console.error('[Settings] IPC 读取配置失败，尝试后端 API:', ipcError)
+        // 继续尝试后端 API
+      }
+    }
+    
+    // ========== 非 Electron 环境或 IPC 失败：使用后端 API ==========
     try {
-      // 优先加载配置和分类，数据库状态后台加载
       const [configData, categoryData] = await Promise.all([
         getConfigs(),
         getConfigCategories()
@@ -477,13 +545,15 @@ function Settings() {
                                 error.message?.includes('Network Error') ||
                                 error.message?.includes('connection refused')
       
-      if (isConnectionError && retryCount < 10) {
-        // 后端未就绪，显示友好提示并自动重试
-        setSaveError('服务正在启动中，请稍候...')
-        setTimeout(() => {
-          loadConfigs(retryCount + 1)
-        }, 2000) // 2秒后重试
-        return
+      if (isConnectionError && retryCount < 3) {
+        // 如果 IPC 也失败了，显示友好提示并自动重试
+        if (retryCount < 2) {
+          setSaveError('服务正在启动中，请稍候...')
+          setTimeout(() => {
+            loadConfigs(retryCount + 1)
+          }, 2000)
+          return
+        }
       }
       
       setSaveError('加载配置失败: ' + (error.message || '请检查后端服务是否正常运行'))
@@ -580,19 +650,18 @@ function Settings() {
       newPathErrors['MINERU_OUTPUT_DIR'] = '输出目录未配置'
     }
     
-    // 一次性检查所有路径
-    if (Object.keys(pathsToCheck).length > 0) {
+    // ========== 路径有效性校验（调用 Electron IPC）==========
+    if (Object.keys(pathsToCheck).length > 0 && (window as any).electronAPI?.checkPaths) {
       try {
-        const checkResult = await checkPaths(pathsToCheck)
-        if (!checkResult.valid) {
-          Object.assign(newPathErrors, checkResult.errors)
-          if (checkResult.errors['POSTGRES_DIR']) validationErrors.push('PostgreSQL 目录检查失败')
-          if (checkResult.errors['STORE_DIR']) validationErrors.push('RustFS 目录检查失败')
-          if (checkResult.errors['MODELS_DIR']) validationErrors.push('AI 模型目录检查失败')
+        const pathCheckResult = await (window as any).electronAPI.checkPaths(pathsToCheck)
+        if (!pathCheckResult.valid) {
+          // 将路径错误合并到 newPathErrors
+          Object.entries(pathCheckResult.errors).forEach(([key, errorMsg]) => {
+            newPathErrors[key] = errorMsg as string
+          })
         }
-      } catch (error: any) {
-        console.error('路径校验异常:', error)
-        validationErrors.push('路径校验异常: ' + (error.message || '请检查后端服务'))
+      } catch (error) {
+        console.error('[Settings] 路径校验失败:', error)
       }
     }
     
@@ -656,7 +725,32 @@ function Settings() {
     
     // ========== 执行保存 ==========
     try {
-      const result = await updateConfigs(editedValues)
+      let result
+      
+      // 统一使用 Electron IPC 保存配置（不依赖后端）
+      if ((window as any).electronAPI?.saveConfigToEnv) {
+        console.log('[Settings] 通过 Electron IPC 保存配置')
+        console.log('[Settings] editedValues:', editedValues)
+        const ipcResult = await (window as any).electronAPI.saveConfigToEnv(editedValues)
+        console.log('[Settings] ipcResult:', ipcResult)
+        if (ipcResult.success) {
+          result = { success: true }
+        } else {
+          // 如果有路径错误，显示具体错误信息
+          if (ipcResult.pathErrors && Object.keys(ipcResult.pathErrors).length > 0) {
+            const errorMessages = Object.entries(ipcResult.pathErrors)
+              .map(([key, msg]) => `${key}: ${msg}`)
+              .join('\n')
+            throw new Error(`路径配置校验失败:\n${errorMessages}`)
+          }
+          throw new Error(ipcResult.message || '保存到配置文件失败')
+        }
+      } else {
+        // 后备方案：尝试后端 API（兼容旧版本）
+        console.log('[Settings] Electron IPC 不可用，尝试后端 API')
+        result = await updateConfigs(editedValues)
+      }
+      
       if (result.success) {
         // 显示重启确认对话框
         setShowRestartDialog(true)
@@ -1135,6 +1229,21 @@ function Settings() {
             <div className="flex items-center gap-3">
               <Settings2 className="w-5 h-5 text-blue-500" />
               <h2 className="text-lg font-semibold text-gray-900">参数配置</h2>
+              {/* 服务状态指示器 */}
+              <Badge 
+                variant="outline" 
+                className={`
+                  ${servicesStatus === 'started' ? 'border-green-500 text-green-700 bg-green-50' : ''}
+                  ${servicesStatus === 'starting' ? 'border-yellow-500 text-yellow-700 bg-yellow-50' : ''}
+                  ${servicesStatus === 'failed' ? 'border-red-500 text-red-700 bg-red-50' : ''}
+                  ${servicesStatus === 'idle' ? 'border-gray-300 text-gray-600 bg-gray-50' : ''}
+                `}
+              >
+                {servicesStatus === 'started' && '服务运行中'}
+                {servicesStatus === 'starting' && '服务启动中...'}
+                {servicesStatus === 'failed' && '服务启动失败'}
+                {servicesStatus === 'idle' && '服务未启动'}
+              </Badge>
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -1175,7 +1284,53 @@ function Settings() {
           {saveSuccess && (
             <Alert className="border-green-500 text-green-700 bg-green-50 relative pr-10">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
-              <AlertDescription>配置保存成功，重启服务后生效</AlertDescription>
+              <AlertDescription className="flex items-center gap-3">
+                <span>配置保存成功</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs border-green-500 text-green-700 hover:bg-green-100"
+                  onClick={async () => {
+                    if ((window as any).electronAPI?.startServices) {
+                      try {
+                        setSaveSuccess(false)
+                        setSaveError('正在启动服务，请稍候...')
+                        const result = await (window as any).electronAPI.startServices()
+                        if (result.success) {
+                          setSaveError(null)
+                          // 等待后端就绪
+                          let retries = 0
+                          const maxRetries = 30
+                          const checkBackend = async () => {
+                            try {
+                              const health = await fetch('http://127.0.0.1:8000/api/health')
+                              if (health.ok) {
+                                setSaveSuccess(true)
+                                setTimeout(() => window.location.reload(), 1000)
+                                return
+                              }
+                            } catch {}
+                            retries++
+                            if (retries < maxRetries) {
+                              setTimeout(checkBackend, 1000)
+                            } else {
+                              setSaveError('服务启动超时，请检查配置')
+                            }
+                          }
+                          checkBackend()
+                        } else {
+                          setSaveError(result.error || '服务启动失败')
+                        }
+                      } catch (error: any) {
+                        setSaveError('启动服务失败: ' + (error.message || '未知错误'))
+                      }
+                    }
+                  }}
+                >
+                  <Zap className="w-3 h-3 mr-1" />
+                  启动服务
+                </Button>
+              </AlertDescription>
               <button
                 onClick={() => setSaveSuccess(false)}
                 className="absolute top-2 right-2 p-1.5 text-green-600 hover:text-green-800 hover:bg-green-100 rounded-md transition-colors"

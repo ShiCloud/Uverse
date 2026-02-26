@@ -2,6 +2,7 @@
 简化的解析日志管理器 - 直接写入文件，按 task 分文件存储
 """
 import os
+import sys
 import json
 import threading
 import time
@@ -19,6 +20,27 @@ class LogEntry:
     message: str
 
 
+def _get_log_dir(log_dir_name: str = "logs") -> Path:
+    """获取日志目录路径 - 与 FileLogManager 保持一致
+    
+    开发模式：使用项目目录的 backend/logs
+    打包模式：使用用户可写目录 (support/userData)
+    """
+    # 开发环境：使用项目目录
+    if not getattr(sys, 'frozen', False):
+        return Path(__file__).parent.parent / log_dir_name
+    
+    # 打包环境：使用用户可写目录 (与 FileLogManager 一致)
+    if os.name == 'nt':  # Windows
+        base_dir = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+    elif sys.platform == 'darwin':  # macOS
+        base_dir = Path.home() / 'Library' / 'Application Support'
+    else:  # Linux
+        base_dir = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
+    
+    return base_dir / 'Uverse' / log_dir_name
+
+
 class ParseFileLogger:
     """
     简化的解析日志管理器
@@ -30,9 +52,8 @@ class ParseFileLogger:
     def __init__(self, log_dir: str = None):
         # 自动推导日志目录（兼容打包模式）
         if log_dir is None:
-            # 尝试从当前文件位置推导
-            backend_dir = Path(__file__).parent.parent
-            self.log_dir = backend_dir / "logs" / "parse"
+            # 使用与 FileLogManager 相同的逻辑
+            self.log_dir = _get_log_dir("logs") / "parse"
         else:
             self.log_dir = Path(log_dir)
         

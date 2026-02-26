@@ -9,6 +9,15 @@ import sys
 import os
 from pathlib import Path
 
+# 首先检查是否是 resource_tracker 的空参数调用
+# multiprocessing 会在 spawn 子进程时先调用一次程序来获取资源跟踪信息
+if len(sys.argv) == 1:
+    sys.exit(0)
+
+# 设置 Python 使用 UTF-8 编码
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUTF8'] = '1'
+
 def find_external_wrapper():
     """查找外部的 pdf_wrapper.py"""
     exe_dir = Path(sys.executable).parent
@@ -39,7 +48,7 @@ def main():
         with open(external_path, 'r', encoding='utf-8') as f:
             code = f.read()
         
-        # 设置执行环境
+        # 设置执行环境 - 保持原始的 sys.argv
         script_globals = {
             '__name__': '__main__',
             '__file__': str(external_path),
@@ -50,9 +59,10 @@ def main():
         # 输出到 stdout 而不是 stderr，避免被标记为 ERROR
         print(f"[pdf-worker] Using built-in code", flush=True)
         # 导入并执行内置的 pdf_wrapper main 函数
+        # 保持原始的 sys.argv 以便 argparse 能正确解析参数
         try:
-            from workers.pdf_wrapper import main
-            main()
+            from workers.pdf_wrapper import main as wrapper_main
+            wrapper_main()
         except ImportError:
             # 如果导入失败，尝试直接执行 __main__ 块
             import workers.pdf_wrapper

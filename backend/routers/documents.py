@@ -671,12 +671,19 @@ async def parse_pdf_task(
                 backend=os.environ.get("MINERU_BACKEND", "pipeline"),
                 filename=filename
             )
-            print(f"[ParseTask] parse_pdf_in_process 返回, success={result.get('success')}, cancelled={result.get('cancelled')}")
+            print(f"[ParseTask] parse_pdf_in_process 返回, result={result}")
         except Exception as e:
             print(f"[ParseTask] parse_pdf_in_process 异常: {e}")
             import traceback
             traceback.print_exc()
             raise
+        
+        # 检查结果是否有效
+        if result is None:
+            raise Exception("解析失败: 子进程返回空结果")
+        
+        if not isinstance(result, dict):
+            raise Exception(f"解析失败: 子进程返回无效结果类型: {type(result)}")
         
         # 检查是否被取消
         if result.get('cancelled'):
@@ -685,7 +692,7 @@ async def parse_pdf_task(
             parse_tasks[task_id].message = "任务已取消"
             return
         
-        if not result["success"]:
+        if not result.get("success", False):
             raise Exception(f"解析失败: {result.get('error', '未知错误')}")
         
         parse_result = result

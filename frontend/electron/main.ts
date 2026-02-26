@@ -19,6 +19,79 @@ if (process.platform === 'win32') {
 process.env.LANG = 'zh_CN.UTF-8'
 process.env.LC_ALL = 'zh_CN.UTF-8'
 
+
+// ==================== 平台工具函数 ====================
+const isWindows = process.platform === 'win32'
+
+// 获取 RustFS 可执行文件名
+function getRustfsExeName(): string {
+  return isWindows ? 'rustfs.exe' : 'rustfs'
+}
+
+// 获取 pg_ctl 可执行文件名
+function getPgCtlExeName(): string {
+  return isWindows ? 'pg_ctl.exe' : 'pg_ctl'
+}
+
+// 获取 Python 可执行文件名
+function getPythonExeName(): string {
+  return isWindows ? 'python.exe' : 'python3'
+}
+
+// 获取虚拟环境 Python 路径
+function getVenvPythonPath(backendPath: string): string {
+  const venvDir = path.join(backendPath, '.venv')
+  if (isWindows) {
+    return path.join(venvDir, 'Scripts', 'python.exe')
+  } else {
+    return path.join(venvDir, 'bin', 'python3')
+  }
+}
+
+// 获取后端可执行文件名
+function getBackendExeName(): string {
+  return isWindows ? 'uverse-backend.exe' : 'uverse-backend'
+}
+
+// ==================== 路径配置 ====================
+/**
+ * 获取配置根目录
+ * - 调试模式: 前端源码目录 (frontend)
+ * - 打包模式: userData 目录
+ */
+function getConfigRoot(): string {
+  if (!app.isPackaged) {
+    // 调试模式: __dirname 是 frontend/dist-electron，上级是 frontend
+    return path.join(__dirname, '..')
+  }
+  // 打包模式: 使用 userData
+  return app.getPath('userData')
+}
+
+/**
+ * 获取 .env 文件路径
+ */
+function getEnvPath(): string {
+  if (!app.isPackaged) {
+    // 调试模式: 使用 backend/.env
+    return path.join(getBackendPath(), '.env')
+  }
+  // 打包模式: 使用 userData/.env
+  return path.join(app.getPath('userData'), '.env')
+}
+
+/**
+ * 获取配置错误文件路径
+ */
+function getConfigErrorsPath(): string {
+  if (!app.isPackaged) {
+    // 调试模式: 使用 frontend/.config_errors
+    return path.join(getConfigRoot(), '.config_errors')
+  }
+  // 打包模式: 使用 userData/.config_errors
+  return path.join(app.getPath('userData'), '.config_errors')
+}
+
 // ==================== 日志系统 ====================
 // 日志目录：程序目录下的 logs 文件夹
 let LOG_DIR = ''
@@ -58,7 +131,8 @@ function initLogDir(): void {
     }
   }
   
-  // 尝试使用 resources/app 目录
+  // 调试模式：使用源码目录下的 logs
+  // 打包模式：使用 resources/app 目录
   try {
     const appRoot = isPackaged 
       ? path.join(resourcesPath, 'app')
@@ -78,7 +152,7 @@ function initLogDir(): void {
     LOG_INIT_ERROR += `; app root failed: ${e.message}`
   }
   
-  // 降级到 userData
+  // 降级到 userData（仅打包模式会走到这里）
   try {
     const userData = app.getPath('userData')
     LOG_DIR = path.join(userData, 'logs')
@@ -196,19 +270,36 @@ function getResourcesPath(): string {
   if (!app.isPackaged) {
     return path.join(__dirname, '../..')
   }
-  // 使用 exe 所在目录下的 resources 目录
-  return path.join(path.dirname(app.getPath('exe')), 'resources')
+  // 打包模式：使用 process.resourcesPath（Electron 自动处理跨平台）
+  // macOS: Uverse.app/Contents/Resources
+  // Windows: resources/
+  return process.resourcesPath
 }
 
 function loadEnvConfig(): void {
-  const resourcePath = getResourcesPath()
-  const envPath = path.join(resourcePath, 'backend', '.env')
+  // 获取 .env 路径（调试模式使用 backend/.env，打包模式使用 userData/.env）
+  const envPath = getEnvPath()
   
   safeLog('[Electron] Checking .env at:', envPath)
+  safeLog('[Electron] isPackaged:', app.isPackaged)
   
   if (!fs.existsSync(envPath)) {
-    safeLog('[Electron] .env not found, using defaults')
-    return
+    // 如果目标位置没有 .env，尝试从 Resources 复制（打包模式）或创建默认（调试模式）
+    const resourcePath = getResourcesPath()
+    const resourceEnvPath = path.join(resourcePath, 'backend', '.env')
+    
+    if (fs.existsSync(resourceEnvPath)) {
+      try {
+        fs.copyFileSync(resourceEnvPath, envPath)
+        safeLog('[Electron] Copied .env from resources to:', envPath)
+      } catch (e) {
+        safeLog('[Electron] Failed to copy .env from resources:', e)
+        return
+      }
+    } else {
+      safeLog('[Electron] .env not found, using defaults')
+      return
+    }
   }
   
   safeLog('[Electron] Loading config from:', envPath)
@@ -315,6 +406,27 @@ function resolveConfigPaths(): void {
     config.mineruOutputDir = path.resolve(backendPath, config.mineruOutputDir)
   }
   
+  // 调试模式下：如果 store 和 temp 目录不存在，自动创建
+  // 注意：postgres 和 models 需要用户手动准备，不自动创建
+  if (!app.isPackaged) {
+    const dirsToCreate = [
+      config.storeDir,
+      config.tempDir,
+      config.mineruOutputDir
+    ]
+    
+    for (const dir of dirsToCreate) {
+      if (dir && !fs.existsSync(dir)) {
+        try {
+          fs.mkdirSync(dir, { recursive: true })
+          safeLog(`[Electron] Created directory: ${dir}`)
+        } catch (e) {
+          safeLog(`[Electron] Failed to create directory: ${dir}`, e)
+        }
+      }
+    }
+  }
+  
   safeLog('[Electron] Resolved paths:', {
     postgresDir: config.postgresDir,
     storeDir: config.storeDir,
@@ -336,10 +448,149 @@ let isQuitting = false
 let pgConfigStatus: 'ok' | 'not_found' | 'error' = 'ok'
 let pgConfigError: string = ''
 
+
+// 服务启动状态
+let servicesStartPromise: Promise<boolean> | null = null
+let servicesStartStatus: 'idle' | 'starting' | 'started' | 'failed' = 'idle'
+let servicesStartError: string = ''
+let pathCheckResult: { valid: boolean; postgres?: { valid: boolean; error?: string }; store?: { valid: boolean; error?: string }; models?: { valid: boolean; error?: string } } = { valid: true }
+
+// ==================== 配置验证 ====================
+/**
+ * 验证必要路径配置是否有效
+ * 返回验证结果和错误信息
+ */
+function validateRequiredPaths(): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+  
+  // POSTGRES_DIR 和 STORE_DIR 的基础校验
+  const basicPaths = [
+    { key: 'POSTGRES_DIR', value: config.postgresDir, checkFile: path.join('bin', getPgCtlExeName()) },
+    { key: 'STORE_DIR', value: config.storeDir, checkFile: getRustfsExeName() }
+  ]
+  
+  for (const { key, value, checkFile } of basicPaths) {
+    if (!value || value.trim() === '') {
+      errors.push(`${key}: 路径无效`)
+      continue
+    }
+    
+    if (!fs.existsSync(value)) {
+      if (!app.isPackaged && key === 'STORE_DIR') {
+        try {
+          fs.mkdirSync(value, { recursive: true })
+          safeLog(`[Electron] Created directory: ${value}`)
+        } catch (e) {
+          errors.push(`${key}: 路径无效`)
+          continue
+        }
+      } else {
+        errors.push(`${key}: 路径无效`)
+        continue
+      }
+    }
+    
+    if (checkFile) {
+      const checkPath = path.join(value, checkFile)
+      if (!fs.existsSync(checkPath)) {
+        errors.push(`${key}: 路径无效`)
+      }
+    }
+  }
+  
+  // MODELS_DIR 特殊校验：检查 mineru.json 和 pipeline 路径
+  const modelsDir = config.modelsDir
+  if (!modelsDir || modelsDir.trim() === '') {
+    errors.push('MODELS_DIR: 路径无效')
+  } else if (!fs.existsSync(modelsDir)) {
+    errors.push('MODELS_DIR: 路径无效')
+  } else {
+    // 检查 mineru.json 是否存在
+    const mineruJsonPath = path.join(modelsDir, 'mineru.json')
+    if (!fs.existsSync(mineruJsonPath)) {
+      errors.push('MODELS_DIR: 路径无效')
+    } else {
+      try {
+        // 读取 mineru.json
+        const mineruContent = fs.readFileSync(mineruJsonPath, 'utf-8')
+        const mineruConfig = JSON.parse(mineruContent)
+        
+        // 获取 pipeline 路径
+        const pipelinePath = mineruConfig['models-dir']?.['pipeline']
+        if (!pipelinePath) {
+          errors.push('MODELS_DIR: 路径无效')
+        } else {
+          // 解析 pipeline 路径（支持相对路径和绝对路径）
+          let resolvedPipelinePath: string
+          if (path.isAbsolute(pipelinePath)) {
+            resolvedPipelinePath = pipelinePath
+          } else {
+            // 相对路径，基于 MODELS_DIR
+            resolvedPipelinePath = path.join(modelsDir, pipelinePath)
+          }
+          
+          // 检查 pipeline 目录是否存在且非空
+          if (!fs.existsSync(resolvedPipelinePath)) {
+            errors.push('MODELS_DIR: 路径无效')
+          } else {
+            const stats = fs.statSync(resolvedPipelinePath)
+            if (!stats.isDirectory()) {
+              errors.push('MODELS_DIR: 路径无效')
+            } else {
+              // 检查目录是否为空
+              const files = fs.readdirSync(resolvedPipelinePath)
+              if (files.length === 0) {
+                errors.push('MODELS_DIR: 路径无效')
+              } else {
+                safeLog(`[Electron] MODELS_DIR validation passed, pipeline: ${resolvedPipelinePath} (${files.length} files)`)
+                
+                // 始终更新 pipeline 路径为基于当前 MODELS_DIR 的标准绝对路径
+                try {
+                  const standardPipelinePath = path.join(modelsDir, 'OpenDataLab', 'PDF-Extract-Kit-1___0')
+                  const standardVlmPath = path.join(modelsDir, 'OpenDataLab', 'MinerU2___5-2509-1___2B')
+                  
+                  if (!mineruConfig['models-dir']) {
+                    mineruConfig['models-dir'] = {}
+                  }
+                  
+                  // 如果标准 pipeline 路径存在，则使用它
+                  if (fs.existsSync(standardPipelinePath)) {
+                    mineruConfig['models-dir']['pipeline'] = standardPipelinePath
+                    safeLog(`[Electron] Updated mineru.json pipeline path to: ${standardPipelinePath}`)
+                  } else {
+                    // 否则使用解析到的路径
+                    mineruConfig['models-dir']['pipeline'] = resolvedPipelinePath
+                    safeLog(`[Electron] Updated mineru.json pipeline path to: ${resolvedPipelinePath}`)
+                  }
+                  
+                  // 同时更新 vlm 路径（如果存在）
+                  if (fs.existsSync(standardVlmPath)) {
+                    mineruConfig['models-dir']['vlm'] = standardVlmPath
+                    safeLog(`[Electron] Updated mineru.json vlm path to: ${standardVlmPath}`)
+                  }
+                  
+                  fs.writeFileSync(mineruJsonPath, JSON.stringify(mineruConfig, null, 4), 'utf-8')
+                  safeLog(`[Electron] Saved mineru.json successfully`)
+                } catch (e) {
+                  safeLog(`[Electron] Failed to update mineru.json:`, e)
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        errors.push('MODELS_DIR: 路径无效')
+      }
+    }
+  }
+  
+  return { valid: errors.length === 0, errors }
+}
+
 // ==================== 服务停止 ====================
 function stopPostgres(force = false): void {
   safeLog('[Electron] Stopping PostgreSQL...')
-  const pgCtl = path.join(config.postgresDir, 'bin', 'pg_ctl.exe')
+  const pgCtl = path.join(config.postgresDir, 'bin', getPgCtlExeName())
   const dataDir = path.join(config.postgresDir, 'data')
   
   // 正常关闭：先尝试 pg_ctl 优雅关闭
@@ -381,40 +632,114 @@ function stopPostgres(force = false): void {
   } catch {}
 }
 
-function stopRustfs(): void {
+function stopRustfs(force = false): void {
   safeLog('[Electron] Stopping RustFS...')
   
   if (rustfsProcess?.pid) {
     try {
-      execSync(`taskkill /PID ${rustfsProcess.pid} /T /F`, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
+      if (isWindows) {
+        execSync(`taskkill /PID ${rustfsProcess.pid} /T /F`, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
+      } else {
+        // macOS/Linux: 尝试优雅关闭，然后强制关闭
+        try {
+          process.kill(rustfsProcess.pid, 'SIGTERM')
+          if (!force) {
+            // 等待进程自行关闭
+            let waitCount = 0
+            while (waitCount < 30) {
+              try {
+                process.kill(rustfsProcess.pid, 0)
+                execSync('sleep 0.1', { stdio: 'ignore' })
+                waitCount++
+              } catch {
+                break
+              }
+            }
+          }
+          // 强制关闭
+          process.kill(rustfsProcess.pid, 'SIGKILL')
+        } catch {}
+      }
       safeLog('[Electron] RustFS stopped via PID')
       rustfsProcess = null
       return
     } catch {}
   }
   
-  try {
-    execSync('taskkill /F /IM rustfs.exe', { windowsHide: true, timeout: 3000, stdio: 'ignore' })
-    safeLog('[Electron] RustFS stopped via taskkill')
-  } catch {}
+  // 兜底：通过进程名杀死
+  if (isWindows) {
+    try {
+      execSync(`taskkill /F /IM ${getRustfsExeName()}`, { windowsHide: true, timeout: 3000, stdio: 'ignore' })
+      safeLog('[Electron] RustFS stopped via taskkill')
+    } catch {}
+  } else {
+    try {
+      execSync(`pkill -f "${getRustfsExeName()}" || true`, { stdio: 'ignore' })
+    } catch {}
+  }
   rustfsProcess = null
 }
 
-function stopBackend(): void {
+function stopBackend(force = false): void {
   safeLog('[Electron] Stopping Python backend...')
-  if (backendProcess?.pid) {
-    try {
-      execSync(`taskkill /PID ${backendProcess.pid} /T /F`, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
-      safeLog('[Electron] Python backend stopped')
-    } catch {}
+  if (!backendProcess?.pid) {
     backendProcess = null
+    return
   }
+  
+  try {
+    if (isWindows) {
+      // Windows: 使用 taskkill
+      const cmd = force 
+        ? `taskkill /PID ${backendProcess.pid} /T /F`
+        : `taskkill /PID ${backendProcess.pid} /T`;
+      execSync(cmd, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
+    } else {
+      // macOS/Linux: 先尝试优雅关闭 (SIGTERM)，如果失败则强制关闭 (SIGKILL)
+      try {
+        // 发送 SIGTERM 信号，让后端有机会优雅关闭
+        process.kill(backendProcess.pid, 'SIGTERM')
+        safeLog('[Electron] SIGTERM sent to backend, waiting for graceful shutdown...')
+        
+        if (!force) {
+          // 非强制模式：等待后端自行关闭（最多5秒）
+          let waitCount = 0
+          while (waitCount < 50) {
+            try {
+              // 检查进程是否还存在
+              process.kill(backendProcess.pid, 0)
+              // 进程还存在，等待
+              execSync('sleep 0.1', { stdio: 'ignore' })
+              waitCount++
+            } catch {
+              // 进程已不存在
+              safeLog('[Electron] Backend stopped gracefully')
+              backendProcess = null
+              return
+            }
+          }
+          safeLog('[Electron] Backend did not stop gracefully, forcing...')
+        }
+        
+        // 强制关闭
+        process.kill(backendProcess.pid, 'SIGKILL')
+        safeLog('[Electron] Backend stopped with SIGKILL')
+      } catch (e) {
+        // 进程可能已经被终止
+        safeLog('[Electron] Backend process already terminated')
+      }
+    }
+    safeLog('[Electron] Python backend stopped')
+  } catch (e) {
+    safeLog('[Electron] Error stopping backend:', e)
+  }
+  backendProcess = null
 }
 
 function stopAllServices(force = false): void {
   safeLog('[Electron] Stopping all services...')
-  stopBackend()
-  stopRustfs()
+  stopBackend(force)
+  stopRustfs(force)
   stopPostgres(force)
   safeLog('[Electron] All services stopped')
 }
@@ -443,7 +768,7 @@ function startPostgres(): boolean {
   safeLog('[Electron] Starting PostgreSQL on port', config.pgPort)
   safeLog('[Electron] PG directory:', config.postgresDir)
   
-  const pgCtl = path.join(config.postgresDir, 'bin', 'pg_ctl.exe')
+  const pgCtl = path.join(config.postgresDir, 'bin', getPgCtlExeName())
   safeLog('[Electron] pg_ctl path:', pgCtl)
   safeLog('[Electron] pg_ctl exists:', fs.existsSync(pgCtl))
   const dataDir = path.join(config.postgresDir, 'data')
@@ -507,7 +832,7 @@ function startRustfs(): boolean {
   safeLog('[Electron] Starting RustFS on port', config.rustfsPort)
   safeLog('[Electron] Store directory:', config.storeDir)
   
-  const rustfsPath = path.join(config.storeDir, 'rustfs.exe')
+  const rustfsPath = path.join(config.storeDir, getRustfsExeName())
   safeLog('[Electron] rustfs path:', rustfsPath)
   safeLog('[Electron] rustfs exists:', fs.existsSync(rustfsPath))
   
@@ -599,7 +924,7 @@ async function startBackend(): Promise<boolean> {
   }
   
   // 检测是使用 PyInstaller 打包的可执行文件还是 Python 源码
-  const packagedExe = path.join(backendPath, 'uverse-backend.exe')
+  const packagedExe = path.join(backendPath, getBackendExeName())
   const isPackaged = fs.existsSync(packagedExe)
   
   safeLog('[Electron] Backend path:', backendPath)
@@ -617,9 +942,8 @@ async function startBackend(): Promise<boolean> {
       })
     } else {
       // 开发模式：使用 Python 源码
-      const pythonPath = fs.existsSync(path.join(backendPath, '.venv', 'Scripts', 'python.exe'))
-        ? path.join(backendPath, '.venv', 'Scripts', 'python.exe')
-        : 'python.exe'
+      const venvPython = getVenvPythonPath(backendPath)
+      const pythonPath = fs.existsSync(venvPython) ? venvPython : getPythonExeName()
       safeLog('[Electron] Using Python interpreter:', pythonPath)
       backendProcess = spawn(pythonPath, [path.join(backendPath, 'main.py')], {
         cwd: backendPath,
@@ -672,7 +996,7 @@ async function startAllServices(): Promise<boolean> {
   // 清理残留进程
   safeLog('[Electron] Cleaning up residual processes...')
   try { execSync('taskkill /F /IM postgres.exe', { windowsHide: true, stdio: 'ignore' }) } catch {}
-  try { execSync('taskkill /F /IM rustfs.exe', { windowsHide: true, stdio: 'ignore' }) } catch {}
+  try { execSync(`taskkill /F /IM ${getRustfsExeName()}`, { windowsHide: true, stdio: 'ignore' }) } catch {}
   // 等待进程完全退出并释放文件锁
   await new Promise(r => setTimeout(r, 2000))
   
@@ -803,25 +1127,74 @@ function createTray(): void {
 app.whenReady().then(async () => {
   // 初始化日志目录（必须在第一个 safeLog 之前）
   initLogDir()
-  safeLog('[Electron] App ready, loading config...')
+  safeLog('[Electron] ==========================================')
+  safeLog('[Electron] App ready')
+  safeLog('[Electron] isPackaged:', app.isPackaged)
+  safeLog('[Electron] ==========================================')
   
-  // 加载配置（必须在 app.isPackaged 之后�?
+  // 加载配置（必须在 app.isPackaged 之后）
+  safeLog('[Electron] Step 1: Loading config...')
   loadEnvConfig()
+  
+  safeLog('[Electron] Step 2: Resolving paths...')
   resolveConfigPaths()
   
-  // 1. 立即创建窗口并加载 React 应用（前端显示 Loading）
+  // 验证必要路径配置
+  safeLog('[Electron] Step 3: Validating required paths...')
+  const validation = validateRequiredPaths()
+  safeLog('[Electron] Validation result:', validation.valid ? 'PASSED' : 'FAILED')
+  if (!validation.valid) {
+    safeLog('[Electron] Validation errors:', validation.errors.join('; '))
+  }
+  
+  // 1. 立即创建窗口并加载 React 应用
   safeLog('[Electron] Creating window and loading app...')
   await createWindow()
   createTray()
   
-  // 2. 后台启动所有服务（React 会通过 API 检查状态）
-  safeLog('[Electron] Starting services in background...')
+  if (!validation.valid) {
+    // 配置不完整，不启动服务，让用户去设置页面配置
+    safeLog('[Electron] Configuration incomplete, skipping service startup')
+    safeLog('[Electron] Validation errors:', validation.errors)
+    servicesStartStatus = 'idle'
+    servicesStartError = '配置不完整：' + validation.errors.join('; ')
+    
+    // 通知前端配置错误（通过 IPC 查询时会返回）
+    pathCheckResult = { 
+      valid: false, 
+      postgres: { valid: false, error: validation.errors.find(e => e.includes('POSTGRES_DIR')) },
+      store: { valid: false, error: validation.errors.find(e => e.includes('STORE_DIR')) },
+      models: { valid: false, error: validation.errors.find(e => e.includes('MODELS_DIR')) }
+    }
+    
+    // 保存错误到文件，前端可以读取
+    try {
+      const errorFile = getConfigErrorsPath()
+      fs.writeFileSync(errorFile, JSON.stringify(validation.errors), 'utf-8')
+    } catch {}
+    
+    return
+  }
+  
+  // 2. 配置验证通过，后台启动所有服务
+  safeLog('[Electron] Configuration valid, starting services...')
+  servicesStartStatus = 'starting'
+  
+  // 清除之前的配置错误
+  try {
+    const errorFile = getConfigErrorsPath()
+    if (fs.existsSync(errorFile)) {
+      fs.unlinkSync(errorFile)
+    }
+  } catch {}
+  
   startAllServices().then(success => {
     if (!success) {
       safeError('[Electron] Failed to start services')
-      // 前端会通过 API 检测到失败并显示错误
+      servicesStartStatus = 'failed'
     } else {
       safeLog('[Electron] All services started successfully')
+      servicesStartStatus = 'started'
     }
   })
 })
@@ -835,13 +1208,34 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-app.on('before-quit', (e) => {
+app.on('before-quit', async (e) => {
   if (!isQuitting) {
     isQuitting = true
     e.preventDefault()
-    // 延迟退出以确保服务停止
-    stopAllServices(true)
-    setTimeout(() => app.quit(), 500)
+    safeLog('[Electron] before-quit: Gracefully stopping services...')
+    
+    // 先尝试优雅关闭（非强制模式），给后端时间完成活跃任务
+    stopAllServices(false)
+    
+    // 等待更长时间让后端完成清理（最多8秒）
+    let waitCount = 0
+    const maxWait = 80 // 80 * 100ms = 8秒
+    while (waitCount < maxWait) {
+      // 检查后端是否已停止
+      if (!backendProcess && !rustfsProcess) {
+        safeLog('[Electron] All services stopped gracefully')
+        break
+      }
+      await new Promise(r => setTimeout(r, 100))
+      waitCount++
+    }
+    
+    if (waitCount >= maxWait) {
+      safeLog('[Electron] Some services still running, forcing shutdown...')
+      stopAllServices(true)
+    }
+    
+    app.quit()
   }
 })
 
@@ -922,7 +1316,10 @@ ipcMain.handle('backend:getStatus', async () => ({
   }),
   pid: backendProcess?.pid,
   pgConfigStatus,
-  pgConfigError
+  pgConfigError,
+  servicesStartStatus,
+  servicesStartError,
+  pathCheck: pathCheckResult
 }))
 ipcMain.handle('backend:restart', async () => {
   stopBackend()
@@ -930,3 +1327,342 @@ ipcMain.handle('backend:restart', async () => {
   const success = await startBackend()
   return { success }
 })
+ipcMain.handle('backend:waitForStart', async () => {
+  if (servicesStartPromise) {
+    await servicesStartPromise
+  }
+  return {
+    status: servicesStartStatus,
+    error: servicesStartError,
+    pathCheck: pathCheckResult
+  }
+})
+
+// 启动所有服务（由前端调用，配置正确后启动）
+ipcMain.handle('services:start', async () => {
+  safeLog('[IPC] Received request to start services')
+  
+  // 如果服务已经在启动中或已启动，返回当前状态
+  if (servicesStartStatus === 'starting' || servicesStartStatus === 'started') {
+    return { success: servicesStartStatus === 'started', status: servicesStartStatus, error: servicesStartError }
+  }
+  
+  // 验证配置
+  const validation = validateRequiredPaths()
+  if (!validation.valid) {
+    safeLog('[IPC] Cannot start services: configuration invalid')
+    return { success: false, status: 'idle', error: '配置不完整：' + validation.errors.join('; ') }
+  }
+  
+  // 启动服务
+  servicesStartStatus = 'starting'
+  servicesStartError = ''
+  
+  try {
+    const success = await startAllServices()
+    servicesStartStatus = success ? 'started' : 'failed'
+    if (!success) {
+      servicesStartError = '服务启动失败'
+    }
+    return { success, status: servicesStartStatus, error: servicesStartError }
+  } catch (error: any) {
+    safeError('[IPC] Failed to start services:', error)
+    servicesStartStatus = 'failed'
+    servicesStartError = error.message || '服务启动失败'
+    return { success: false, status: 'failed', error: servicesStartError }
+  }
+})
+
+ipcMain.handle('config:getFromEnv', () => {
+  // 获取 .env 路径（调试模式使用 backend/.env，打包模式使用 userData/.env）
+  const envPath = getEnvPath()
+  safeLog('[IPC] getConfigFromEnv - reading from:', envPath)
+  safeLog('[IPC] isPackaged:', app.isPackaged)
+  
+  const configs: Array<{key: string; value: string; description: string; category: string}> = []
+  
+  try {
+    if (!fs.existsSync(envPath)) {
+      return { success: false, configs: [], message: '.env file not found' }
+    }
+    
+    const content = fs.readFileSync(envPath, 'utf-8')
+    const categoryMap: Record<string, string> = {
+      'PORT': 'basic', 'DATABASE_PORT': 'basic',
+      'POSTGRES_DIR': 'path', 'STORE_DIR': 'path', 'MODELS_DIR': 'path', 'TEMP_DIR': 'path',
+      'MINERU_OUTPUT_DIR': 'mineru',
+      'MINERU_BACKEND': 'mineru', 'MINERU_DEVICE': 'mineru', 'MINERU_VRAM': 'mineru',
+      'MINERU_VIRTUAL_VRAM_SIZE': 'mineru',
+      'DEBUG': 'other', 'LOG_LEVEL': 'other'
+    }
+    const descriptionMap: Record<string, string> = {
+      'PORT': '后端服务端口',
+      'DATABASE_PORT': 'PostgreSQL 端口',
+      'POSTGRES_DIR': 'PostgreSQL 安装目录',
+      'STORE_DIR': '存储目录（包含 RustFS 数据）',
+      'MODELS_DIR': 'AI 模型目录（包含 OpenDataLab 等模型）',
+      'TEMP_DIR': '临时文件目录',
+      'MINERU_OUTPUT_DIR': 'PDF 解析输出目录',
+      'MINERU_BACKEND': 'MinerU 解析后端 (auto/pytorch/mps)',
+      'MINERU_DEVICE': 'MinerU 设备模式 (cuda/cpu)',
+      'MINERU_VRAM': 'MinerU 显存限制',
+      'MINERU_VIRTUAL_VRAM_SIZE': 'MinerU 虚拟显存大小',
+      'DEBUG': '调试模式',
+      'LOG_LEVEL': '日志级别'
+    }
+    
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      
+      const eqIndex = trimmed.indexOf('=')
+      if (eqIndex === -1) continue
+      
+      const key = trimmed.substring(0, eqIndex).trim()
+      let value = trimmed.substring(eqIndex + 1).trim()
+      
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1)
+      }
+      
+      configs.push({
+        key,
+        value,
+        description: descriptionMap[key] || '',
+        category: categoryMap[key] || 'other'
+      })
+    }
+    
+    return { success: true, configs }
+  } catch (e: any) {
+    return { success: false, configs: [], message: e.message }
+  }
+})
+
+ipcMain.handle('config:saveToEnv', async (_event, configs: Record<string, string>) => {
+  safeLog('[IPC] config:saveToEnv called')
+  safeLog('[IPC] Config keys:', Object.keys(configs).join(', '))
+  safeLog('[IPC] isPackaged:', app.isPackaged)
+  
+  // 获取 .env 路径（调试模式使用 backend/.env，打包模式使用 userData/.env）
+  const envPath = getEnvPath()
+  safeLog('[IPC] Will save .env to:', envPath)
+  
+  try {
+    // 读取现有配置
+    const existingConfigs: Record<string, string> = {}
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf-8')
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+        const eqIndex = trimmed.indexOf('=')
+        if (eqIndex === -1) continue
+        const key = trimmed.substring(0, eqIndex).trim()
+        let value = trimmed.substring(eqIndex + 1).trim()
+        if ((value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1)
+        }
+        existingConfigs[key] = value
+      }
+    }
+    
+    // 合并新配置
+    Object.assign(existingConfigs, configs)
+    
+    // 写入 .env
+    const lines: string[] = []
+    const basicKeys = ['PORT', 'DATABASE_HOST', 'DATABASE_PORT', 'DATABASE_USER', 'DATABASE_PASSWORD', 'DATABASE_NAME']
+    const pathKeys = ['POSTGRES_DIR', 'STORE_DIR', 'MODELS_DIR', 'TEMP_DIR']
+    const mineruKeys = ['MINERU_OUTPUT_DIR', 'MINERU_BACKEND', 'MINERU_DEVICE', 'MINERU_VRAM', 'MINERU_VIRTUAL_VRAM_SIZE']
+    
+    lines.push('# Basic Configuration')
+    for (const key of basicKeys) {
+      if (existingConfigs[key] !== undefined) lines.push(`${key}=${existingConfigs[key]}`)
+    }
+    lines.push('')
+    
+    lines.push('# Path Configuration')
+    for (const key of pathKeys) {
+      if (existingConfigs[key] !== undefined) {
+        const value = existingConfigs[key]
+        const needsQuotes = value.includes(' ') || value.includes('#') || value.includes('=')
+        lines.push(`${key}=${needsQuotes ? `"${value}"` : value}`)
+      }
+    }
+    lines.push('')
+    
+    lines.push('# MinerU Configuration')
+    for (const key of mineruKeys) {
+      if (existingConfigs[key] !== undefined) {
+        const value = existingConfigs[key]
+        const needsQuotes = value.includes(' ') || value.includes('#') || value.includes('=')
+        lines.push(`${key}=${needsQuotes ? `"${value}"` : value}`)
+      }
+    }
+    
+    fs.writeFileSync(envPath, lines.join('\n'), 'utf-8')
+    safeLog('[IPC] Saved .env to:', envPath)
+    
+    // 如果 MODELS_DIR 配置了，同步更新 mineru.json
+    safeLog('[IPC] Checking MODELS_DIR in configs:', !!configs['MODELS_DIR'])
+    if (configs['MODELS_DIR']) {
+      try {
+        const modelsDir = configs['MODELS_DIR']
+        const mineruJsonPath = path.join(modelsDir, 'mineru.json')
+        safeLog('[IPC] Checking mineru.json at:', mineruJsonPath)
+        
+        const mineruExists = fs.existsSync(mineruJsonPath)
+        safeLog('[IPC] mineru.json exists:', mineruExists)
+        
+        if (mineruExists) {
+          safeLog('[IPC] Found mineru.json, reading...')
+          const mineruContent = fs.readFileSync(mineruJsonPath, 'utf-8')
+          safeLog('[IPC] mineru.json content length:', mineruContent.length)
+          
+          const mineruConfig = JSON.parse(mineruContent)
+          const pipelinePath = path.join(modelsDir, 'OpenDataLab', 'PDF-Extract-Kit-1___0')
+          const vlmPath = path.join(modelsDir, 'OpenDataLab', 'MinerU2___5-2509-1___2B')
+          
+          safeLog('[IPC] Pipeline path:', pipelinePath)
+          safeLog('[IPC] Pipeline exists:', fs.existsSync(pipelinePath))
+          safeLog('[IPC] VLM path:', vlmPath)
+          safeLog('[IPC] VLM exists:', fs.existsSync(vlmPath))
+          
+          if (!mineruConfig['models-dir']) {
+            safeLog('[IPC] Creating models-dir object')
+            mineruConfig['models-dir'] = {}
+          }
+          
+          if (fs.existsSync(pipelinePath)) {
+            mineruConfig['models-dir']['pipeline'] = pipelinePath
+            safeLog('[IPC] ✓ Updated pipeline path')
+          } else {
+            safeLog('[IPC] ✗ Pipeline path not found, skipping')
+          }
+          
+          if (fs.existsSync(vlmPath)) {
+            mineruConfig['models-dir']['vlm'] = vlmPath
+            safeLog('[IPC] ✓ Updated vlm path')
+          } else {
+            safeLog('[IPC] ✗ VLM path not found, skipping')
+          }
+          
+          safeLog('[IPC] Writing mineru.json...')
+          fs.writeFileSync(mineruJsonPath, JSON.stringify(mineruConfig, null, 4), 'utf-8')
+          safeLog('[IPC] ✓ Saved mineru.json successfully')
+        } else {
+          safeLog('[IPC] ✗ mineru.json not found at:', mineruJsonPath)
+        }
+      } catch (e: any) {
+        safeError('[IPC] ✗ Failed to update mineru.json:', e)
+        safeError('[IPC] Error stack:', e.stack)
+        // 继续返回成功，因为 .env 保存成功了
+      }
+    } else {
+      safeLog('[IPC] MODELS_DIR not provided, skipping mineru.json update')
+    }
+    
+    safeLog('[IPC] config:saveToEnv completed successfully')
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// 检查路径有效性（保存配置前调用）
+ipcMain.handle('config:checkPaths', async (_event, paths: Record<string, string>) => {
+  safeLog('[IPC] Checking paths:', Object.keys(paths))
+  const errors: Record<string, string> = {}
+  
+  // 获取 backend 路径用于解析相对路径
+  const backendPath = getBackendPath()
+  
+  for (const [key, value] of Object.entries(paths)) {
+    if (!value || value.trim() === '') {
+      errors[key] = '路径无效'
+      continue
+    }
+    
+    // 解析路径（支持相对和绝对路径）
+    let resolvedPath: string
+    if (path.isAbsolute(value)) {
+      resolvedPath = value
+    } else if (backendPath) {
+      resolvedPath = path.resolve(backendPath, value)
+    } else {
+      errors[key] = '路径无效'
+      continue
+    }
+    
+    // 检查目录是否存在
+    if (!fs.existsSync(resolvedPath)) {
+      errors[key] = '路径无效'
+      continue
+    }
+    
+    // 特定路径的额外检查
+    if (key === 'POSTGRES_DIR') {
+      const pgCtl = path.join(resolvedPath, 'bin', getPgCtlExeName())
+      if (!fs.existsSync(pgCtl)) {
+        errors[key] = '路径无效'
+      }
+    } else if (key === 'STORE_DIR') {
+      const rustfs = path.join(resolvedPath, getRustfsExeName())
+      if (!fs.existsSync(rustfs)) {
+        errors[key] = '路径无效'
+      }
+    } else if (key === 'MODELS_DIR') {
+      // 检查 mineru.json
+      const mineruJsonPath = path.join(resolvedPath, 'mineru.json')
+      if (!fs.existsSync(mineruJsonPath)) {
+        errors[key] = '路径无效'
+      } else {
+        try {
+          const mineruContent = fs.readFileSync(mineruJsonPath, 'utf-8')
+          const mineruConfig = JSON.parse(mineruContent)
+          const pipelinePath = mineruConfig['models-dir']?.['pipeline']
+          
+          if (!pipelinePath) {
+            errors[key] = '路径无效'
+          } else {
+            // 解析 pipeline 路径
+            let resolvedPipelinePath: string
+            if (path.isAbsolute(pipelinePath)) {
+              resolvedPipelinePath = pipelinePath
+            } else {
+              resolvedPipelinePath = path.join(resolvedPath, pipelinePath)
+            }
+            
+            if (!fs.existsSync(resolvedPipelinePath)) {
+              errors[key] = '路径无效'
+            } else {
+              const files = fs.readdirSync(resolvedPipelinePath)
+              if (files.length === 0) {
+                errors[key] = '路径无效'
+              }
+            }
+          }
+        } catch (e) {
+          errors[key] = '路径无效'
+        }
+      }
+    }
+  }
+  
+  const valid = Object.keys(errors).length === 0
+  safeLog('[IPC] Path check result:', valid ? 'valid' : `invalid (${Object.keys(errors).join(', ')})`)
+  return { valid, errors }
+})
+
+ipcMain.handle('shell:openExternal', async (_event, url: string) => {
+  const { shell } = require('electron')
+  await shell.openExternal(url)
+})
+
+ipcMain.handle('log:write', (_event, level: string, msg: string) => {
+  writeLogToFile(level, `[Frontend] ${msg}`)
+})
+

@@ -9,7 +9,8 @@ import { Separator } from '@/components/ui/separator'
 import Documents from './pages/Documents'
 import Settings from './pages/Settings'
 import LoadingPage from './pages/Loading'
-import { waitForReady, checkPaths, getConfigValues, getDbStatus } from './utils/api'
+import { waitForReady, getDbStatus } from './utils/api'
+import { logger } from './utils/logger'
 import iconImage from './assets/icon.png'
 
 // 侧边栏导航项
@@ -113,20 +114,11 @@ interface DbStatusResult {
   error?: string
 }
 
-interface BackendStatus {
-  running: boolean
-  pid?: number
-  pgConfigStatus?: 'ok' | 'not_found' | 'error'
-  pgConfigError?: string
-}
-
 function App() {
   // 路径检查状态
   const [pathsValid, setPathsValid] = useState<boolean | null>(null)
   // 数据库状态
   const [dbValid, setDbValid] = useState<boolean | null>(null)
-  // PostgreSQL 配置状态
-  const [pgConfigStatus, setPgConfigStatus] = useState<'ok' | 'not_found' | 'error' | null>(null)
   // 服务是否就绪
   const [servicesReady, setServicesReady] = useState(false)
   // 最小加载时间是否已过
@@ -143,31 +135,59 @@ function App() {
   // 检查服务状态 - 在Loading页面完成
   useEffect(() => {
     const checkServices = async () => {
-      // 首先检查 Electron 后端状态（包括 PostgreSQL 配置状态）
-      let electronBackendStatus: BackendStatus | null = null
-      try {
-        if (window.electronAPI?.getBackendStatus) {
-          electronBackendStatus = await window.electronAPI.getBackendStatus()
-          console.log('[App] Electron 后端状态:', electronBackendStatus)
+      logger.info('[App] 开始检查服务状态')
+      
+      // 首先等待服务启动完成（Electron 主进程中的服务启动）
+      if (window.electronAPI?.waitForServicesStart) {
+        logger.info('[App] 等待服务启动...')
+        const startResult = await window.electronAPI.waitForServicesStart()
+        logger.info('[App] 服务启动结果:', startResult)
+        
+        // 保存路径错误到 localStorage
+        if (startResult.pathCheck) {
+          const pathCheck = startResult.pathCheck
+          const pathErrors: Record<string, string> = {}
           
-          // 如果 PostgreSQL 配置有问题，记录下来并保存到 localStorage
-          if (electronBackendStatus.pgConfigStatus && electronBackendStatus.pgConfigStatus !== 'ok') {
-            setPgConfigStatus(electronBackendStatus.pgConfigStatus)
-            console.error('[App] PostgreSQL 配置问题:', electronBackendStatus.pgConfigError)
-            // 保存到 localStorage，Settings 页面可以读取显示
-            localStorage.setItem('pg_config_error', electronBackendStatus.pgConfigError || '')
-            localStorage.setItem('pg_config_status', electronBackendStatus.pgConfigStatus)
+          if (pathCheck.postgres?.valid === false) {
+            pathErrors['POSTGRES_DIR'] = pathCheck.postgres.error || 'PostgreSQL 路径无效'
+          }
+          if (pathCheck.store?.valid === false) {
+            pathErrors['STORE_DIR'] = pathCheck.store.error || 'Store 路径无效'
+          }
+          if (pathCheck.models?.valid === false) {
+            pathErrors['MODELS_DIR'] = pathCheck.models.error || 'Models 路径无效'
+          }
+          
+          if (Object.keys(pathErrors).length > 0) {
+            localStorage.setItem('path_errors', JSON.stringify(pathErrors))
+            setPathsValid(false)
           } else {
-            // 清除之前的错误
-            localStorage.removeItem('pg_config_error')
-            localStorage.removeItem('pg_config_status')
+            localStorage.removeItem('path_errors')
+            setPathsValid(true)
           }
         }
-      } catch (err) {
-        console.error('[App] 获取 Electron 后端状态失败:', err)
+        
+        // 如果配置不完整（idle状态），跳转到设置页面
+        if (startResult.status === 'idle') {
+          logger.info('[App] 配置不完整，跳转到设置页面')
+          setPathsValid(false)
+          setDbValid(false)
+          setServicesReady(true)
+          return
+        }
+        
+        // 如果服务启动失败，跳转到设置页面
+        if (startResult.status === 'failed') {
+          logger.error('[App] 服务启动失败:', startResult.error)
+          setPathsValid(false)
+          setDbValid(false)
+          setServicesReady(true)
+          return
+        }
       }
 
-      // 等待后端就绪
+      // 服务启动成功，等待后端就绪
+      logger.info('[App] 等待后端就绪...')
       const result = await waitForReady({
         initialDelay: 300,
         retryDelay: 500,
@@ -175,53 +195,25 @@ function App() {
       })
 
       if (!result.ready) {
-        console.error('[App] 服务启动失败:', result.error)
-        // 如果是因为 PostgreSQL 配置问题导致失败，特殊处理
-        if (electronBackendStatus?.pgConfigStatus === 'not_found') {
-          setPathsValid(false)
-          setDbValid(false)
-          setServicesReady(true)
-          return
-        }
+        logger.error('[App] 后端未就绪:', result.error)
         setPathsValid(false)
         setDbValid(false)
         setServicesReady(true)
         return
       }
 
-      // 并行获取配置和数据库状态
-      const [configs, dbStatusResult] = await Promise.all([
-        getConfigValues().catch(err => {
-          console.error('[App] 获取配置失败:', err)
-          return {} as Record<string, string>
-        }),
-        getDbStatus().catch(err => {
-          console.error('[App] 数据库状态检查异常:', err)
-          return { available: false } as DbStatusResult
-        })
-      ])
+      // 获取数据库状态
+      const dbStatusResult = await getDbStatus().catch(err => {
+        logger.error('[App] 数据库状态检查异常:', err)
+        return { available: false } as DbStatusResult
+      })
       
       setDbValid(dbStatusResult.available)
       
-      // 检查关键路径配置
-      try {
-        const configMap = configs as Record<string, string>
-        const postgresDir = configMap['POSTGRES_DIR'] || 'postgres'
-        const storeDir = configMap['STORE_DIR'] || 'store'
-        const modelsDir = configMap['MODELS_DIR'] || 'models'
-        
-        const pathCheckResult = await checkPaths({
-          POSTGRES_DIR: postgresDir,
-          STORE_DIR: storeDir,
-          MODELS_DIR: modelsDir
-        })
-        
-        setPathsValid(pathCheckResult.valid === true)
-      } catch (error) {
-        console.error('[App] 路径检查异常:', error)
-        setPathsValid(false)
+      // 所有检查通过
+      if (pathsValid === null) {
+        setPathsValid(true)
       }
-      
       setServicesReady(true)
     }
 
@@ -235,9 +227,8 @@ function App() {
 
   // 服务就绪且最小加载时间已过，显示主界面
   const allValid = pathsValid === true && dbValid === true
-  const hasPgConfigIssue = pgConfigStatus === 'not_found' || pgConfigStatus === 'error'
-  // 如果有 PostgreSQL 配置问题，强制跳转到设置页面
-  const defaultRoute = (allValid && !hasPgConfigIssue) ? '/documents' : '/settings'
+  // 跳转到设置页面或文档页面
+  const defaultRoute = allValid ? '/documents' : '/settings'
   
   return (
     <Router>

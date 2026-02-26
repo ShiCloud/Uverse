@@ -168,6 +168,12 @@ class FileLogHandler(logging.Handler):
 
 
 root_logger = logging.getLogger()
+
+# 清理可能存在的默认 StreamHandler（避免控制台重复输出）
+for h in root_logger.handlers[:]:
+    if isinstance(h, logging.StreamHandler) and not isinstance(h, FileLogHandler):
+        root_logger.removeHandler(h)
+
 file_handler = None
 for h in root_logger.handlers:
     if isinstance(h, FileLogHandler):
@@ -181,12 +187,14 @@ if file_handler is None:
 
 root_logger.setLevel(logging.INFO)
 
+# 配置应用 logger，但不添加额外 handler（避免重复）
+# 所有日志通过 root_logger 的 FileLogHandler 统一处理
 app_loggers = ['routers', 'services', 'core', 'models', '__main__']
 for logger_name in app_loggers:
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
-    if not logger.handlers and logger.parent != root_logger:
-        logger.addHandler(file_handler)
+    # 不添加 handler，让日志传播到 root_logger 统一处理
+    # 这样可以避免重复日志
 
 
 # 重定向 print 到 logging
@@ -237,9 +245,9 @@ class PrintToLog:
         self.logger.log(level, line)
     
     def flush(self):
-        if self._buffer.strip():
-            self._emit_line(self._buffer)
-            self._buffer = ''
+        # 注意：不要直接发送 _buffer，因为它可能已经通过 write() 的部分内容处理过了
+        # 只清空缓冲区，避免在程序退出时重复发送
+        self._buffer = ''
 
 
 _print_redirector = PrintToLog('__main__')
@@ -330,7 +338,9 @@ async def _background_init_services():
         
         # 检查 RustFS 可执行文件
         if store_dir:
-            rustfs_exe = store_dir / 'rustfs.exe'
+            # 根据平台选择正确的可执行文件名
+            rustfs_binary = 'rustfs.exe' if os.name == 'nt' else 'rustfs'
+            rustfs_exe = store_dir / rustfs_binary
             STORE_AVAILABLE = rustfs_exe.exists()
             print(f"[OK] RustFS 可执行文件: {rustfs_exe}" if STORE_AVAILABLE else f"[WARN] RustFS 可执行文件不存在: {rustfs_exe}")
         else:
@@ -535,6 +545,20 @@ if __name__ == "__main__":
     
     print(f"[WEB] 服务将运行在: http://{host}:{port}")
     
+    # 配置 uvicorn 日志，避免重复输出
+    # uvicorn 的日志应该传播到 root_logger，由 FileLogHandler 统一处理
+    import logging.config
+    uvicorn_log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {},
+        "loggers": {
+            "uvicorn": {"handlers": [], "level": "INFO", "propagate": True},
+            "uvicorn.error": {"handlers": [], "level": "INFO", "propagate": True},
+            "uvicorn.access": {"handlers": [], "level": "INFO", "propagate": True},
+        },
+    }
+    
     exit_code = 0
     try:
         uvicorn.run(
@@ -543,7 +567,7 @@ if __name__ == "__main__":
             port=port,
             reload=False,
             log_level="info",
-            log_config=None
+            log_config=uvicorn_log_config
         )
     except KeyboardInterrupt:
         pass

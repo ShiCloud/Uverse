@@ -160,6 +160,36 @@ class RustFSStorage:
             except Exception as e:
                 print(f"初始化存储桶失败 {bucket_name}: {e}")
     
+    def _ensure_bucket_exists(self, bucket: str):
+        """确保存储桶存在，如果不存在则创建"""
+        try:
+            self._client.head_bucket(Bucket=bucket)
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code in ('NoSuchBucket', '404'):
+                try:
+                    self._client.create_bucket(Bucket=bucket)
+                    print(f"[RustFS] 自动创建存储桶: {bucket}")
+                    
+                    # 设置公开访问策略
+                    policy = {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {"AWS": ["*"]},
+                                "Action": ["s3:GetObject"],
+                                "Resource": [f"arn:aws:s3:::{bucket}/*"]
+                            }
+                        ]
+                    }
+                    self._client.put_bucket_policy(Bucket=bucket, Policy=json.dumps(policy))
+                except Exception as create_error:
+                    print(f"[RustFS] 创建存储桶失败 {bucket}: {create_error}")
+                    raise
+            else:
+                raise
+    
     def upload_file(
         self, 
         file_data: BinaryIO, 
@@ -185,6 +215,9 @@ class RustFSStorage:
         start_time = time.time()
         
         bucket = bucket or "uploads"
+        
+        # 确保存储桶存在
+        self._ensure_bucket_exists(bucket)
         object_key = f"{datetime.now().strftime('%Y/%m/%d')}/{uuid.uuid4().hex[:8]}_{filename}"
         
         print(f"[RustFS] 开始上传: {filename} -> bucket={bucket}, key={object_key}")
@@ -292,6 +325,9 @@ class RustFSStorage:
             上传结果信息
         """
         bucket = bucket or "uploads"
+        
+        # 确保存储桶存在
+        self._ensure_bucket_exists(bucket)
         
         if object_key is None:
             filename = Path(file_path).name
